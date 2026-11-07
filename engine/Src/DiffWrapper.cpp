@@ -1972,7 +1972,7 @@ void CDiffWrapper::WritePatchFile(struct change * script, file_data * inf)
 	if (m_bAddCmdLine && output_style != OUTPUT_HTML)
 	{
 		String switches = FormatSwitchString();
-		fprintf(outfile, "diff%S %s %s\n",
+		fprintf(outfile, "diff%s %s %s\n",
 			switches.c_str(), inf_patch[0].name, inf_patch[1].name);
 	}
 
