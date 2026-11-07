@@ -1,0 +1,14 @@
+{
+  "icu": {
+    "version": "73.2",
+    "license_file": "ICU-73.2-LICENSE.txt",
+    "source": {
+      "version": "73.2",
+      "url": "https://github.com/unicode-org/icu/releases/download/release-73-2/icu4c-73_2-src.tgz",
+      "sha256": "818a80712ed3caacd9b652305e01afc7fa167e6f2e94996da44b90c2ab604ce1",
+      "sha512": "76dd782db6205833f289d7eb68b60860dddfa3f614f0ba03fe7ec13117077f82109f0dc1becabcdf4c8a9c628b94478ab0a46134bdb06f4302be55f74027ce62",
+      "size": 26519906,
+      "checksum_url": "https://github.com/unicode-org/icu/releases/download/release-73-2/SHASUM512.txt"
+    }
+  }
+}

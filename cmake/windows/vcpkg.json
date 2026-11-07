@@ -1,0 +1,13 @@
+{
+  "name": "mergedesk-native-dependencies",
+  "version-string": "1.0.0",
+  "builtin-baseline": "351757dd7b0c6518412ca98b3ef7982861a47fc6",
+  "dependencies": [
+    { "name": "poco", "default-features": false },
+    "boost-headers",
+    "boost-flyweight",
+    "icu",
+    "libarchive",
+    "gtest"
+  ]
+}

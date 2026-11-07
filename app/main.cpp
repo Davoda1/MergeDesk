@@ -1,0 +1,16656 @@
+// MergeDesk modifications: Copyright (C) 2026 davoda1. Modified 2026-11-07.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// MergeDesk: Qt application entry point.
+#include <functional>
+#include <memory>
+#include <optional>
+#include <QHash>
+#include <QApplication>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QCommandLineParser>
+#include <QFileInfo>
+#include <QFileDialog>
+#include <QLibraryInfo>
+#include <QLocale>
+#include <QCheckBox>
+#include <QDateTimeEdit>
+#include <QDialogButtonBox>
+#include <QHeaderView>
+#include <QRadioButton>
+#include <QKeyEvent>
+#include <QFocusEvent>
+#include <QFontMetricsF>
+#include <QMenu>
+#include <QMenuBar>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QToolButton>
+#include <QSettings>
+#include <QSaveFile>
+#include <QStyleHints>
+#include <QToolTip>
+#include <QTemporaryDir>
+#include <QProcess>
+#include <QAbstractItemView>
+#include <QComboBox>
+#include <QCompleter>
+#include <QFileSystemModel>
+#include <QImage>
+#include <QPushButton>
+#include <QScrollBar>
+#include <QTableView>
+#include <QTabWidget>
+#include <QTreeWidget>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include "DiffTextEdit.h"
+#include "GoToDialog.h"
+#include "FindDialogs.h"
+#include "FindText.h"
+#include "PaneSearch.h"
+#include "TextMarkerDialog.h"
+#include "OptionsMgr.h"
+#include "LocationPane.h"
+#include "ImagePane.h"
+#include "MessageBoxes.h"
+#include <QTextBrowser>
+#include <QThread>
+#include <QTextBlock>
+#include <QTextLayout>
+#include <QThreadPool>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QTimer>
+#include <QTranslator>
+#include "FileCompareView.h"
+#include "PopupList.h"
+#include "SyntaxHighlighter.h"
+#include "TextDefinition.h"
+#include "SyntaxColors.h"
+#include "TableCompareView.h"
+#include "TableFiles.h"
+#include "Settings.h"
+#include "ImageCompareView.h"
+#include "WebCompareView.h"
+#include "ImageFormats.h"
+#include "BinaryFiles.h"
+#include "HexCompareView.h"
+#include "HexView.h"
+#include "HexDialogs.h"
+#include "FilepathEdit.h"
+#include "FileOps.h"
+#include "FolderCompareDriver.h"
+#include "FolderCompareView.h"
+#include <archive.h>
+#include <archive_entry.h>
+#include <QDir>
+#include "AboutDialog.h"
+#include "CommandLine.h"
+#include "DesktopIntegration.h"
+#include "ArchiveCompare.h"
+#include "MainWindow.h"
+#include "NewComparisonView.h"
+#include "EngineOptions.h"
+#include "ComparisonResultFilterDialog.h"
+#include "DisplayFilterBar.h"
+#include "FileFilterCombo.h"
+#include "FileFilterMenu.h"
+#include "FileFilters.h"
+#include "FilterConditionDialog.h"
+#include "FiltersDialog.h"
+#include "LineFilterMenu.h"
+#include "MatchInsideDialog.h"
+#include "ReplaceLists.h"
+#include "ProjectLinks.h"
+#include "StarPrompt.h"
+#include "ItemCheckStyle.h"
+#include "OptionsDialog.h"
+#include "Theme.h"
+#include "MergeDeskFeatureTests.h"
+#include "MergeDeskSafetyTests.h"
+#include "../packaging/runtime/DeploymentPaths.h"
+#ifdef LM_HAVE_PORTAL
+#include "PortalAppearance.h"
+#include <QDBusVariant>
+#endif
+#ifdef Q_OS_MACOS
+#include "MacServices.h"
+#endif
+
+// engine (folder-compare image hook)
+#include "DiffItem.h"
+#include "LineFilterHelper.h"
+#include "IAbortable.h"
+#include "image_compare_hook.h"
+#include "table_props_hook.h"
+#include "ImgMergeBuffer.hpp"
+// engine (option names and the file filter, for the selftests)
+#include "OptionsDef.h"
+#include "unicoder.h"
+#include "FileFilterHelper.h"
+
+namespace
+{
+
+#ifdef Q_OS_LINUX
+// Qt 6.4 auto-selects the portal theme only for Flatpak/Snap. Its portal
+// plugin keeps the desktop's normal base theme and delegates when no portal
+// chooser is available, including GTK's native fallback on GNOME.
+void preferDesktopPortalTheme(int argc, char *argv[])
+{
+	if (qEnvironmentVariableIsSet("QT_QPA_PLATFORMTHEME")
+		|| qEnvironmentVariableIsEmpty("DBUS_SESSION_BUS_ADDRESS")
+		|| (qEnvironmentVariableIsEmpty("DISPLAY")
+			&& qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")))
+		return;
+	QByteArray platform = qgetenv("QT_QPA_PLATFORM");
+	for (int i = 1; i < argc; ++i)
+	{
+		QByteArray option(argv[i]);
+		if (option == "--")
+			break;
+		if (option.startsWith("--"))
+			option.remove(0, 1);
+		if (option == "-platformtheme")
+			return; // preserve Qt's explicit command-line override
+		if (option == "-platform" && i + 1 < argc)
+			platform = argv[++i];
+	}
+	const QByteArray name = platform.split(';').first().split(':').first();
+	if (!name.isEmpty() && name != "xcb" && name != "wayland"
+		&& name != "wayland-egl")
+		return; // offscreen/minimal and other explicit platforms stay untouched
+	qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+}
+#endif
+
+/** Pixel comparison for the folder compare, mirroring upstream's
+    ImageCompare::compare_files over the ported WinIMerge core. */
+int compareImageFiles(const String &file1, const String &file2,
+	double colorDistanceThreshold, const IAbortable *piAbortable)
+{
+	CImgMergeBuffer buffer;
+	buffer.SetColorDistanceThreshold(colorDistanceThreshold);
+	const std::wstring f1 = QString::fromStdString(file1).toStdWString();
+	const std::wstring f2 = QString::fromStdString(file2).toStdWString();
+	const wchar_t *files[3] = { f1.c_str(), f2.c_str(), nullptr };
+	if (!buffer.OpenImages(2, files))
+		return DIFFCODE::CMPERR;
+	bool aborted = false;
+	bool different = false;
+	if (buffer.GetPageCount(0) == buffer.GetPageCount(1))
+	{
+		for (int page = 0; page < buffer.GetPageCount(0); ++page)
+		{
+			if (piAbortable != nullptr && piAbortable->ShouldAbort())
+			{
+				aborted = true;
+				break;
+			}
+			buffer.SetCurrentPageAll(page);
+			buffer.CompareImages();
+			if (buffer.GetDiffCount() > 0)
+			{
+				different = true;
+				break;
+			}
+		}
+	}
+	else
+		different = true;
+	buffer.CloseImages();
+	if (aborted)
+		return DIFFCODE::CMPABORT;
+	return different ? DIFFCODE::DIFF : DIFFCODE::SAME;
+}
+
+/** A small zip or tar.gz with text entries, for the archive selftests. */
+struct TestArchiveEntry
+{
+	const char *name;
+	const char *content;
+};
+
+bool writeTestArchive(const QString &path, bool tarGz,
+	std::initializer_list<TestArchiveEntry> entries)
+{
+	struct archive *a = archive_write_new();
+	if (tarGz)
+	{
+		archive_write_set_format_pax_restricted(a);
+		archive_write_add_filter_gzip(a);
+	}
+	else
+		archive_write_set_format_zip(a);
+	bool ok = archive_write_open_filename(a,
+		QFile::encodeName(path).constData()) == ARCHIVE_OK;
+	for (const TestArchiveEntry &e : entries)
+	{
+		if (!ok)
+			break;
+		struct archive_entry *entry = archive_entry_new();
+		archive_entry_set_pathname(entry, e.name);
+		archive_entry_set_size(entry, static_cast<la_int64_t>(strlen(e.content)));
+		archive_entry_set_filetype(entry, AE_IFREG);
+		archive_entry_set_perm(entry, 0644);
+		ok = archive_write_header(a, entry) == ARCHIVE_OK
+			&& archive_write_data(a, e.content, strlen(e.content)) >= 0;
+		archive_entry_free(entry);
+	}
+	ok = archive_write_close(a) == ARCHIVE_OK && ok;
+	archive_write_free(a);
+	return ok;
+}
+
+/** A run for the selftests or the screenshots, which keep Qt's parser
+    and switches of their own. */
+bool isTestRun(int argc, char *argv[])
+{
+	for (int i = 1; i < argc; ++i)
+		if (std::strncmp(argv[i], "--selftest", 10) == 0
+			|| std::strncmp(argv[i], "--screenshot", 12) == 0)
+			return true;
+	return false;
+}
+
+/** Where a run keeps its settings: the saved ones; none read and none
+    kept (-noprefs); or those of an INI file (-inifile), which the run
+    works on a copy of and writes back as it ends. */
+class RunSettings
+{
+public:
+	explicit RunSettings(const lm::CommandLine &cmd)
+	{
+		if (!cmd.noPrefs && cmd.iniFile.isEmpty())
+			return;
+		m_dir = std::make_unique<QTemporaryDir>();
+		QSettings::setDefaultFormat(QSettings::IniFormat);
+		QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_dir->path());
+		if (cmd.noPrefs)
+			return;
+		m_iniFile = cmd.iniFile;
+		const QString working = QSettings().fileName();
+		QDir().mkpath(QFileInfo(working).path());
+		if (QFile::exists(m_iniFile))
+			QFile::copy(m_iniFile, working);
+	}
+
+	/** The INI file again, with what the run saved. */
+	void writeBack()
+	{
+		if (m_iniFile.isEmpty())
+			return;
+		QSettings settings;
+		settings.sync();
+		const QString working = settings.fileName();
+		if (!QFile::exists(working))
+			return;
+		QDir().mkpath(QFileInfo(m_iniFile).path());
+		QFile::remove(m_iniFile);
+		QFile::copy(working, m_iniFile);
+	}
+
+private:
+	std::unique_ptr<QTemporaryDir> m_dir;
+	QString m_iniFile;
+};
+
+/** A run that is no test: WinMerge's command line, read and opened
+    (CMergeApp::InitInstance, ParseArgsAndDoOpen). */
+int runCommandLine(const lm::CommandLine &cmd)
+{
+	// upstream writes these to the console (OutputConsole) and goes on
+	for (const QString &error : cmd.errors)
+		fprintf(stderr, "%s\n", qPrintable(error));
+	for (const QString &option : cmd.unsupported)
+		fprintf(stderr, "Option '%s' is not supported by MergeDesk yet\n", qPrintable(option));
+	if (cmd.showUsage)
+	{
+		printf("%s", qPrintable(lm::CommandLine::usage()));
+		return 0;
+	}
+	if (cmd.showVersion)
+	{
+		printf("%s %s\n", qPrintable(QCoreApplication::applicationName()),
+			qPrintable(QCoreApplication::applicationVersion()));
+		return 0;
+	}
+	// the options for this run, the filter and the compare method
+	for (const QString &name : lm::useOptions(cmd.options))
+		fprintf(stderr, "Invalid key '%s' specified in -config option\n", qPrintable(name));
+	if (!cmd.fileFilter.isEmpty())
+		lm::useFileFilterMask(cmd.fileFilter);
+	if (cmd.compareMethod.has_value())
+		lm::useCompareMethod(*cmd.compareMethod);
+	// the default codepage, by the options -cfg may have set, or -cp
+	lm::updateCodepageModule();
+	if (cmd.codepage != 0)
+		lm::updateDefaultCodepage(2, cmd.codepage);
+	// no message box waits for anybody (-noninteractive)
+	if (cmd.nonInteractive)
+		lm::setUnattended(true);
+	// a dialog alone (ShowDialog)
+	if (cmd.dialogType == lm::CommandLine::DialogType::Options)
+	{
+		OptionsDialog dialog;
+		dialog.exec();
+		return 0;
+	}
+	if (cmd.dialogType == lm::CommandLine::DialogType::About)
+	{
+		AboutDialog dialog;
+		dialog.exec();
+		return 0;
+	}
+
+	// a day of use, for the request that waits for a few of them (see
+	// StarPrompt), counted before the first screen asks whether it is due
+	lm::StarPrompt::instance()->noteAppStarted();
+	MainWindow window;
+#ifdef Q_OS_MACOS
+	lm::installMacServices(&window);
+#endif
+	window.openFromCommandLine(cmd);
+	if (cmd.showWindow == lm::CommandLine::ShowWindow::Minimize)
+		window.showMinimized();
+	else if (cmd.showWindow == lm::CommandLine::ShowWindow::Maximize)
+		window.showMaximized();
+	else
+		window.show();
+	const int status = QApplication::exec();
+	// -enableexitcode: the last comparison's result, 0 identical, 1
+	// different, 2 an error or none (ConvertLastCompareResultToExitCode)
+	if (cmd.enableExitCode)
+	{
+		const int result = window.lastCompareResult();
+		return result == 0 ? 0 : (result > 0 ? 1 : 2);
+	}
+	return status;
+}
+
+} // namespace
+
+int main(int argc, char *argv[])
+{
+    mergedesk::configureBundledRuntime();
+	// menu integration runs headless (package-manager hooks): handle it
+	// before a GUI application needs a display
+	const int integration = lm::runDesktopIntegrationCommand(argc, argv);
+	if (integration >= 0)
+		return integration;
+
+	// an unattended run (-noninteractive) needs no screen: it runs on Qt's
+	// offscreen platform where it is there, so that it works without a
+	// display and flashes no window
+	const bool testRun = isTestRun(argc, argv);
+	if (!testRun && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
+	{
+		QStringList arguments;
+		for (int i = 1; i < argc; ++i)
+			arguments.append(QString::fromLocal8Bit(argv[i]));
+		if (lm::CommandLine::parse(arguments).nonInteractive)
+		{
+#ifdef Q_OS_MACOS
+			qputenv("QT_QPA_PLATFORM", "offscreen;cocoa");
+#else
+			qputenv("QT_QPA_PLATFORM", "offscreen;windows;wayland;xcb");
+#endif
+		}
+	}
+
+#ifdef Q_OS_LINUX
+	preferDesktopPortalTheme(argc, argv);
+#endif
+	WebCompareView::registerLocalScheme();
+	QApplication app(argc, argv);
+	QGuiApplication::setDesktopFileName(QStringLiteral("mergedesk"));
+	QApplication::setApplicationName(QStringLiteral("MergeDesk"));
+	QApplication::setApplicationVersion(QStringLiteral("1.0.0"));
+	QApplication::setOrganizationName(QStringLiteral("davoda1"));
+	QSettings::setDefaultFormat(QSettings::IniFormat);
+	QApplication::setStyle(QStringLiteral("Fusion"));
+	QApplication::setWindowIcon(QIcon(QStringLiteral(":/about/mergedesk.svg")));
+	// selftests run on settings of their own, emptied first: they neither
+	// depend on the user's options nor change them
+	for (int i = 1; i < argc; ++i)
+	{
+		if (std::strncmp(argv[i], "--selftest", 10) == 0)
+		{
+			QApplication::setOrganizationName(QStringLiteral("MergeDesk-Selftest"));
+			QSettings().clear();
+#ifdef Q_OS_MACOS
+			// a selftest ends when its checks are done, not when something
+			// asks the application to quit: AppKit ends the process there
+			// and then, the checks unfinished and the exit code telling of
+			// no failure
+			lm::ignoreQuitRequestsForTest();
+#endif
+			// informational boxes (identical files...) would wait forever
+			// for a click in a headless run
+			lm::setMessageSinkForTest([](const QString &) {});
+			// and so would a question: none is expected, the answer is No
+			lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+			// likewise the save prompt: unsaved changes are discarded
+			MainWindow::setSavePromptForTest([]() { return 2; });
+			// and no file dialog or editor opens from the Filters dialog
+			FiltersDialog::setFileChooserForTest([](bool, const QString &) { return QString(); });
+			FiltersDialog::setEditorForTest([](const QString &) {});
+			break;
+		}
+	}
+	// WinMerge's command line, read before any setting is: -noprefs and
+	// -inifile say where the settings are
+	std::optional<lm::CommandLine> commandLine;
+	std::unique_ptr<RunSettings> runSettings;
+	if (!testRun)
+	{
+		commandLine = lm::CommandLine::parse(QCoreApplication::arguments().mid(1));
+		runSettings = std::make_unique<RunSettings>(*commandLine);
+	}
+	// the folder scan runs the engine on QtConcurrent's pool; the engine
+	// expects Windows' 1 MiB thread stacks and macOS gives 512 KiB, so use
+	// glibc's 8 MiB default like DirScan's compare pool
+	QThreadPool::globalInstance()->setStackSize(8 * 1024 * 1024);
+	// the whole application follows the chosen theme from the first window
+	lm::Theme::instance()->applyToApplication();
+
+	// translations follow the system language unless overridden by the
+	// Options dialog (Appearance/Language) or, for testing, by the
+	// MERGEDESK_LANGUAGE environment variable; Qt's own strings load
+	// too when the qtbase catalog is available
+	const QByteArray forcedLanguage = qgetenv("MERGEDESK_LANGUAGE");
+	const QString configuredLanguage = QSettings()
+		.value(QStringLiteral("Appearance/Language"), QStringLiteral("en_US")).toString();
+	const QLocale locale = !forcedLanguage.isEmpty()
+		? QLocale(QString::fromUtf8(forcedLanguage))
+		: (!configuredLanguage.isEmpty()
+			? QLocale(configuredLanguage) : QLocale(QStringLiteral("en_US")));
+	static QTranslator qtTranslator;
+    const QString runtimeRoot=mergedesk::bundledRuntimeRoot();
+    const QString translationsPath=runtimeRoot.isEmpty()
+        ? QLibraryInfo::path(QLibraryInfo::TranslationsPath)
+        : QDir(runtimeRoot).filePath(QStringLiteral("translations"));
+	if (qtTranslator.load(locale, QStringLiteral("qtbase"), QStringLiteral("_"), translationsPath))
+		app.installTranslator(&qtTranslator);
+	static QTranslator appTranslator;
+	if (appTranslator.load(locale, QStringLiteral("mergedesk"),
+			QStringLiteral("_"), QStringLiteral(":/i18n")))
+		app.installTranslator(&appTranslator);
+	// the codepage "According to MergeDesk User Interface" takes
+	lm::setInterfaceLanguage(appTranslator.isEmpty()
+		? QStringLiteral("en") : appTranslator.language());
+
+	lm::installEngineOptions();
+	lm::installFileFilters();
+	lm::SetImageCompareHook(&compareImageFiles);
+	// the line expressions of a prediffer read a file as a table by the
+	// Compare > Table options, as upstream's MakeTablePropertiesByFileName
+	lm::SetTablePropertiesHook(&lm::engineTablePropertiesByFileName);
+
+	// WinMerge's command line, but for the selftests and the screenshots,
+	// which keep Qt's parser and its own switches
+	if (commandLine.has_value())
+	{
+		const int status = runCommandLine(*commandLine);
+		runSettings->writeBack();
+		return status;
+	}
+
+	QCommandLineParser parser;
+	parser.setApplicationDescription(
+		QStringLiteral("Native Qt6 file and folder comparison for Windows and GNU/Linux"));
+	parser.addHelpOption();
+	parser.addVersionOption();
+	parser.addPositionalArgument(QStringLiteral("left"), QStringLiteral("Left file"), QStringLiteral("[left]"));
+	parser.addPositionalArgument(QStringLiteral("middle"), QStringLiteral("Middle file (3-way)"), QStringLiteral("[middle]"));
+	parser.addPositionalArgument(QStringLiteral("right"), QStringLiteral("Right file"), QStringLiteral("[right]"));
+	QCommandLineOption screenshotOpt(QStringLiteral("screenshot"),
+		QStringLiteral("Render the comparison to <file> and exit (for testing)"),
+		QStringLiteral("file"));
+	parser.addOption(screenshotOpt);
+	QCommandLineOption selftestMergeOpt(QStringLiteral("selftest-merge"),
+		QStringLiteral("Copy all differences left-to-right in memory and verify (for testing)"));
+	parser.addOption(selftestMergeOpt);
+	QCommandLineOption selftestCountOpt(QStringLiteral("selftest-count"),
+		QStringLiteral("Print the number of differences and exit (for testing)"));
+	parser.addOption(selftestCountOpt);
+	QCommandLineOption selftestFileOpsOpt(QStringLiteral("selftest-fileops"),
+		QStringLiteral("Copy <left> recursively onto <right> and verify (for testing)"));
+	parser.addOption(selftestFileOpsOpt);
+	QCommandLineOption gotoFirstOpt(QStringLiteral("goto-first-diff"),
+		QStringLiteral("Select the first difference after opening (for testing)"));
+	parser.addOption(gotoFirstOpt);
+	QCommandLineOption newOpt(QStringLiteral("new"),
+		QStringLiteral("Open an empty text comparison"));
+	parser.addOption(newOpt);
+	QCommandLineOption selftestMergeAllOpt(QStringLiteral("selftest-merge-all"),
+		QStringLiteral("Copy all differences at once left-to-right and verify (for testing)"));
+	parser.addOption(selftestMergeAllOpt);
+	QCommandLineOption selftestSaveOpt(QStringLiteral("selftest-save"),
+		QStringLiteral("Merge left-to-right, save and verify the backup (for testing)"));
+	parser.addOption(selftestSaveOpt);
+	QCommandLineOption selftestUndoOpt(QStringLiteral("selftest-undo"),
+		QStringLiteral("Copy one difference, undo, redo and verify (for testing)"));
+	parser.addOption(selftestUndoOpt);
+	QCommandLineOption selftestUndoScrollOpt(QStringLiteral("selftest-undo-scroll"),
+		QStringLiteral("Verify the viewport stays put across merge+undo (for testing)"));
+	parser.addOption(selftestUndoScrollOpt);
+	QCommandLineOption selftestNavOpt(QStringLiteral("selftest-nav"),
+		QStringLiteral("Verify next-diff after a copy continues from the cursor (for testing)"));
+	parser.addOption(selftestNavOpt);
+	QCommandLineOption selftestCopyOpt(QStringLiteral("selftest-copy"),
+		QStringLiteral("Verify select-all + copy excludes alignment filler (for testing)"));
+	parser.addOption(selftestCopyOpt);
+	QCommandLineOption selftestTableOpt(QStringLiteral("selftest-table"),
+		QStringLiteral("Table-compare two CSVs, merge all and verify (for testing)"));
+	parser.addOption(selftestTableOpt);
+	QCommandLineOption selftestImageOpt(QStringLiteral("selftest-image"),
+		QStringLiteral("Image-compare two files, merge all in memory and verify (for testing)"));
+	parser.addOption(selftestImageOpt);
+	QCommandLineOption selftestMerge3Opt(QStringLiteral("selftest-merge3"),
+		QStringLiteral("3-way: merge left into middle, then middle into right, and verify (for testing)"));
+	parser.addOption(selftestMerge3Opt);
+	QCommandLineOption selftestLocationPaneOpt(QStringLiteral("selftest-location-pane"),
+		QStringLiteral("Click, drag and right-click the location pane, and use its Go To dialog (for testing)"));
+	parser.addOption(selftestLocationPaneOpt);
+	QCommandLineOption selftestFindReplaceOpt(QStringLiteral("selftest-find-replace"),
+		QStringLiteral("Find and replace through WinMerge's dialogs, F3 and the search marker (for testing)"));
+	parser.addOption(selftestFindReplaceOpt);
+	QCommandLineOption selftestMarkersOpt(QStringLiteral("selftest-markers"),
+		QStringLiteral("Use WinMerge's Marker dialog and verify what the panes mark (for testing)"));
+	parser.addOption(selftestMarkersOpt);
+	QCommandLineOption selftestScrollSyncOpt(QStringLiteral("selftest-scroll-sync"),
+		QStringLiteral("Scroll a file comparison every way and verify the panes and the location pane follow (for testing)"));
+	parser.addOption(selftestScrollSyncOpt);
+	QCommandLineOption selftestDiffFromCursorOpt(QStringLiteral("selftest-diff-from-cursor"),
+		QStringLiteral("Go to the next and previous difference from where the cursor is and verify it (for testing)"));
+	parser.addOption(selftestDiffFromCursorOpt);
+	QCommandLineOption selftestDiffScrollOpt(QStringLiteral("selftest-diff-scroll"),
+		QStringLiteral("Step through differences and verify the panes scroll as WinMerge's do (for testing)"));
+	parser.addOption(selftestDiffScrollOpt);
+	QCommandLineOption selftestTableOptionsOpt(QStringLiteral("selftest-table-options"),
+		QStringLiteral("Verify the Compare > Table options and the files they open as tables (for testing)"));
+	parser.addOption(selftestTableOptionsOpt);
+	QCommandLineOption selftestImageOptionsOpt(QStringLiteral("selftest-image-options"),
+		QStringLiteral("Verify the Compare > Image options and the files they open as images (for testing)"));
+	parser.addOption(selftestImageOptionsOpt);
+	QCommandLineOption selftestTable3WayOpt(QStringLiteral("selftest-table-3way"),
+		QStringLiteral("Compare three tables and copy, undo, swap and save in them (for testing)"));
+	parser.addOption(selftestTable3WayOpt);
+	QCommandLineOption selftestTableEditOpt(QStringLiteral("selftest-table-edit"),
+		QStringLiteral("Edit the cells of a table comparison and copy selected cells, with undo (for testing)"));
+	parser.addOption(selftestTableEditOpt);
+	QCommandLineOption selftestTableIgnoreColumnOpt(QStringLiteral("selftest-table-ignore-column"),
+		QStringLiteral("Leave columns of a table comparison out of it from the header menu (for testing)"));
+	parser.addOption(selftestTableIgnoreColumnOpt);
+	QCommandLineOption selftestTreeSitterOpt(QStringLiteral("selftest-tree-sitter"),
+		QStringLiteral("Color YAML, TOML and Markdown through Tree-sitter, as the text changes too (for testing)"));
+	parser.addOption(selftestTreeSitterOpt);
+	QCommandLineOption selftestEditorTabsOpt(QStringLiteral("selftest-editor-tabs"),
+		QStringLiteral("Exercise the tabs of Options > Editor: the tab size, the Tab and Shift+Tab keys and the column in the status bar (for testing)"));
+	parser.addOption(selftestEditorTabsOpt);
+	QCommandLineOption selftestEolOpt(QStringLiteral("selftest-eol"),
+		QStringLiteral("Exercise the line endings: files of mixed endings kept, real endings compared and the question about files that end their lines otherwise (for testing)"));
+	parser.addOption(selftestEolOpt);
+	QCommandLineOption selftestCommandLineOpt(QStringLiteral("selftest-command-line"),
+		QStringLiteral("Read WinMerge's command line switches and open what they ask for (for testing)"));
+	parser.addOption(selftestCommandLineOpt);
+	QCommandLineOption selftestSubfoldersOpt(QStringLiteral("selftest-subfolders"),
+		QStringLiteral("Compare folders without their subfolders: folder items, \"..\", opening in place, the selection screen's box and -r (for testing)"));
+	parser.addOption(selftestSubfoldersOpt);
+	QCommandLineOption selftestCodepageOpt(QStringLiteral("selftest-codepage"),
+		QStringLiteral("Exercise Options > Codepage: the default codepage, -cp and the detection of a file's encoding (for testing)"));
+	parser.addOption(selftestCodepageOpt);
+	QCommandLineOption selftestFolderSelectionOpt(QStringLiteral("selftest-folder-selection"),
+		QStringLiteral("Compare two or three selected items of a folder comparison with each other (for testing)"));
+	parser.addOption(selftestFolderSelectionOpt);
+	QCommandLineOption selftestHexOpt(QStringLiteral("selftest-hex"),
+		QStringLiteral("Compare binary files in the hex view and verify it (for testing)"));
+	parser.addOption(selftestHexOpt);
+	QCommandLineOption selftestHexEditOpt(QStringLiteral("selftest-hex-edit"),
+		QStringLiteral("Edit a binary comparison through the hex editor's dialogs and verify it (for testing)"));
+	parser.addOption(selftestHexEditOpt);
+	QCommandLineOption selftestHexHeaderOpt(QStringLiteral("selftest-hex-header"),
+		QStringLiteral("Use the path bar over the panes of a binary comparison and verify it (for testing)"));
+	parser.addOption(selftestHexHeaderOpt);
+	QCommandLineOption selftestPathBarsOpt(QStringLiteral("selftest-path-bars"),
+		QStringLiteral("Use the path bar over the panes of text, table and image comparisons and verify it (for testing)"));
+	parser.addOption(selftestPathBarsOpt);
+	QCommandLineOption selftestUniqueItemsOpt(QStringLiteral("selftest-unique-items"),
+		QStringLiteral("Open items of a folder comparison that are on one side only and verify it (for testing)"));
+	parser.addOption(selftestUniqueItemsOpt);
+	QCommandLineOption selftestLastLineOpt(QStringLiteral("selftest-last-line"),
+		QStringLiteral("Compare files whose last lines differ and verify what is a difference (for testing)"));
+	parser.addOption(selftestLastLineOpt);
+	QCommandLineOption selftestStarPromptOpt(QStringLiteral("selftest-star-prompt"),
+		QStringLiteral("Verify the request for a star and the Help menu's project pages (for testing)"));
+	parser.addOption(selftestStarPromptOpt);
+	QCommandLineOption selftestUndoRescanOpt(QStringLiteral("selftest-undo-rescan"),
+		QStringLiteral("Edit, recompare (realigning the edited pane), undo and redo (for testing)"));
+	parser.addOption(selftestUndoRescanOpt);
+	QCommandLineOption selftestUndoGhostsOpt(QStringLiteral("selftest-undo-ghosts"),
+		QStringLiteral("Merge over ghost filler, undo and verify no phantom lines (for testing)"));
+	parser.addOption(selftestUndoGhostsOpt);
+	QCommandLineOption selftestOpenEnterOpt(QStringLiteral("selftest-open-enter"),
+		QStringLiteral("Press Enter in the selector's path field and verify the comparison opens (for testing)"));
+	parser.addOption(selftestOpenEnterOpt);
+	QCommandLineOption selftestArchiveOpt(QStringLiteral("selftest-archive"),
+		QStringLiteral("Build a zip and a tar.gz, extract both and folder-compare them (for testing)"));
+	parser.addOption(selftestArchiveOpt);
+	QCommandLineOption selftestFolder3Opt(QStringLiteral("selftest-folder3"),
+		QStringLiteral("Build three folder trees and verify the 3-way comparison (for testing)"));
+	parser.addOption(selftestFolder3Opt);
+	QCommandLineOption selftestServiceOpt(QStringLiteral("selftest-service"),
+		QStringLiteral("Simulate the Finder service arriving after a cold start (for testing)"));
+	parser.addOption(selftestServiceOpt);
+	QCommandLineOption selftestMarkerOpt(QStringLiteral("selftest-marker"),
+		QStringLiteral("Verify insertion markers where one side lacks text (for testing)"));
+	parser.addOption(selftestMarkerOpt);
+	QCommandLineOption selftestFolderSyncOpt(QStringLiteral("selftest-folder-sync"),
+		QStringLiteral("Save a file opened from a folder compare and verify its row updates (for testing)"));
+	parser.addOption(selftestFolderSyncOpt);
+	QCommandLineOption selftestFolder3OpsOpt(QStringLiteral("selftest-folder3-ops"),
+		QStringLiteral("Copy and delete rows in a 3-way folder compare and verify (for testing)"));
+	parser.addOption(selftestFolder3OpsOpt);
+	QCommandLineOption selftestFolderContentOpt(QStringLiteral("selftest-folder-content"),
+		QStringLiteral("Verify the folder compare's Full Contents method: text diff, ignore options, file types (for testing)"));
+	parser.addOption(selftestFolderContentOpt);
+	QCommandLineOption selftestCompareMethodsOpt(QStringLiteral("selftest-compare-methods"),
+		QStringLiteral("Run a folder compare with each of WinMerge's seven compare methods and verify (for testing)"));
+	parser.addOption(selftestCompareMethodsOpt);
+	QCommandLineOption selftestShowFiltersOpt(QStringLiteral("selftest-show-filters"),
+		QStringLiteral("Toggle the folder view's View menu filters, 2- and 3-way, and verify (for testing)"));
+	parser.addOption(selftestShowFiltersOpt);
+	parser.addOption(QCommandLineOption(QStringLiteral("install-desktop-integration"),
+		QStringLiteral("Linux AppImage: add MergeDesk to the applications menu")));
+	parser.addOption(QCommandLineOption(QStringLiteral("remove-desktop-integration"),
+		QStringLiteral("Linux AppImage: remove it from the applications menu")));
+	parser.addOption(QCommandLineOption(QStringLiteral("data-home"),
+		QStringLiteral("With the two options above: the data directory to use instead of $XDG_DATA_HOME or ~/.local/share"),
+		QStringLiteral("dir")));
+	QCommandLineOption selftestDesktopOpt(QStringLiteral("selftest-desktop-integration"),
+		QStringLiteral("Install and remove the menu integration in a scratch data home (for testing)"));
+	parser.addOption(selftestDesktopOpt);
+	QCommandLineOption screenshotAboutOpt(QStringLiteral("screenshot-about"),
+		QStringLiteral("Render the About box (and its contributors list) to <file> and exit (for testing)"),
+		QStringLiteral("file"));
+	parser.addOption(screenshotAboutOpt);
+	QCommandLineOption selftestAboutOpt(QStringLiteral("selftest-about"),
+		QStringLiteral("Verify the About box contents (for testing)"));
+	parser.addOption(selftestAboutOpt);
+	QCommandLineOption screenshotOptionsOpt(QStringLiteral("screenshot-options"),
+		QStringLiteral("Render every Options page to <file>-<n>.png and exit (for testing)"),
+		QStringLiteral("file"));
+	parser.addOption(screenshotOptionsOpt);
+	QCommandLineOption screenshotFiltersOpt(QStringLiteral("screenshot-filters"),
+		QStringLiteral("Render every Filters page to <file>-<n>.png, with a sample row each, and exit (for testing)"),
+		QStringLiteral("file"));
+	parser.addOption(screenshotFiltersOpt);
+	QCommandLineOption screenshotSelectorOpt(QStringLiteral("screenshot-selector"),
+		QStringLiteral("Render the \"Select Files or Folders\" screen, over the paths given, to <file> and exit (for testing)"),
+		QStringLiteral("file"));
+	parser.addOption(screenshotSelectorOpt);
+	QCommandLineOption selftestOptionsOpt(QStringLiteral("selftest-options"),
+		QStringLiteral("Verify the Options dialog's page tree, titles and per-page defaults (for testing)"));
+	parser.addOption(selftestOptionsOpt);
+	QCommandLineOption selftestGeneralOptionsOpt(QStringLiteral("selftest-general-options"),
+		QStringLiteral("Exercise Close with Esc, Preserve file time, Close the selection on Compare and auto completion (for testing)"));
+	parser.addOption(selftestGeneralOptionsOpt);
+	QCommandLineOption selftestTabCloseOpt(QStringLiteral("selftest-tab-close"),
+		QStringLiteral("Close comparison tabs and verify which tab becomes current (for testing)"));
+	parser.addOption(selftestTabCloseOpt);
+	QCommandLineOption selftestLineDiffsOpt(QStringLiteral("selftest-line-diffs"),
+		QStringLiteral("Exercise the Editor > Compare/Merge page: line difference coloring, word breaks, View Line Differences and the automatic rescan (for testing)"));
+	parser.addOption(selftestLineDiffsOpt);
+	QCommandLineOption selftestCopyGranularityOpt(QStringLiteral("selftest-copy-granularity"),
+		QStringLiteral("Copy with text selected by each copy granularity, and undo it (for testing)"));
+	parser.addOption(selftestCopyGranularityOpt);
+	QCommandLineOption selftestPaneMenuOpt(QStringLiteral("selftest-pane-menu"),
+		QStringLiteral("Exercise the file comparison's pane menu: its copies, Select Line Difference and the filters (for testing)"));
+	parser.addOption(selftestPaneMenuOpt);
+	QCommandLineOption selftestTableMenuOpt(QStringLiteral("selftest-table-menu"),
+		QStringLiteral("Exercise the table comparison's cell menu: its copies, Select Line Difference, the filters and Convert Line Endings (for testing)"));
+	parser.addOption(selftestTableMenuOpt);
+	QCommandLineOption selftestSyntaxMenuOpt(QStringLiteral("selftest-syntax-menu"),
+		QStringLiteral("Exercise View > Syntax Highlight and the status bar's syntax column (for testing)"));
+	parser.addOption(selftestSyntaxMenuOpt);
+	QCommandLineOption selftestIgnoredDiffsOpt(QStringLiteral("selftest-ignored-diffs"),
+		QStringLiteral("Count the ignored differences apart in the status bar and in Go To (for testing)"));
+	parser.addOption(selftestIgnoredDiffsOpt);
+	QCommandLineOption selftestViewEolOpt(QStringLiteral("selftest-view-eol"),
+		QStringLiteral("Exercise View Whitespace, View EOL and Convert Line Endings (for testing)"));
+	parser.addOption(selftestViewEolOpt);
+	QCommandLineOption selftestIdenticalOpt(QStringLiteral("selftest-identical"),
+		QStringLiteral("Verify the identical files message, the self-compare and the Message Boxes page (for testing)"));
+	parser.addOption(selftestIdenticalOpt);
+	QCommandLineOption selftestReloadOpt(QStringLiteral("selftest-reload"),
+		QStringLiteral("Change compared files behind the comparison and verify the reload question, File > Reload and the auto-reload modes (for testing)"));
+	parser.addOption(selftestReloadOpt);
+	QCommandLineOption selftestCompareOptionsOpt(QStringLiteral("selftest-compare-options"),
+		QStringLiteral("Verify the Compare options page and what its options do to file, table and folder comparisons (for testing)"));
+	parser.addOption(selftestCompareOptionsOpt);
+	QCommandLineOption selftestFiltersOpt(QStringLiteral("selftest-filters"),
+		QStringLiteral("Verify the Filters dialog's pages, where the line and substitution filters are kept, what they do to comparisons and what OK rescans (for testing)"));
+	parser.addOption(selftestFiltersOpt);
+	QCommandLineOption selftestFileFiltersOpt(QStringLiteral("selftest-file-filters"),
+		QStringLiteral("Verify the shipped preset filters, the File Filters page, the global file filter in folder comparisons, its status bar pane and the selection screen's filter field (for testing)"));
+	parser.addOption(selftestFileFiltersOpt);
+	QCommandLineOption selftestFilterMenuOpt(QStringLiteral("selftest-filter-menu"),
+		QStringLiteral("Verify the file filter helper menu, its Filter Condition dialog and that folder comparisons go by the conditions it makes (for testing)"));
+	parser.addOption(selftestFilterMenuOpt);
+	QCommandLineOption selftestDisplayFilterOpt(QStringLiteral("selftest-display-filter"),
+		QStringLiteral("Verify the folder window's display filter: its bar, what it hides in the tree and in the flat list, the columns' header menu and the Filter by Comparison Result dialog (for testing)"));
+	parser.addOption(selftestDisplayFilterOpt);
+	QCommandLineOption selftestLineFilterOpt(QStringLiteral("selftest-line-filter"),
+		QStringLiteral("Verify the file window's display filter: its bar, the lines it hides, the editor around hidden lines, the navigation, the \"=\" menu and the pane menu's item (for testing)"));
+	parser.addOption(selftestLineFilterOpt);
+	QCommandLineOption selftestThemeOpt(QStringLiteral("selftest-theme"),
+		QStringLiteral("Switch the theme from the Options dialog and verify the whole application follows (for testing)"));
+	parser.addOption(selftestThemeOpt);
+	QCommandLineOption selftestPortalOpt(QStringLiteral("selftest-portal"),
+		QStringLiteral("Linux: follow the desktop portal's color scheme from dark to light; needs packaging/fake_portal.py (for testing)"));
+	parser.addOption(selftestPortalOpt);
+#ifdef Q_OS_LINUX
+	QCommandLineOption selftestNativeDialogsOpt(QStringLiteral("selftest-native-dialogs"),
+		QStringLiteral("Verify native open/save/folder dialogs through the isolated portal fixture (for testing)"),
+		QStringLiteral("fixture-directory"));
+	parser.addOption(selftestNativeDialogsOpt);
+#endif
+	QCommandLineOption selftestArchiveMixedOpt(QStringLiteral("selftest-archive-mixed"),
+		QStringLiteral("Compare a folder against an archive, 2- and 3-way (for testing)"));
+	parser.addOption(selftestArchiveMixedOpt);
+	QCommandLineOption selftestMnemonicsOpt(QStringLiteral("selftest-menu-mnemonics"),
+		QStringLiteral("Verify that no two items of a menu share an accelerator letter in the UI language (for testing)"));
+	parser.addOption(selftestMnemonicsOpt);
+	QCommandLineOption selftestQtI18nOpt(QStringLiteral("selftest-qt-i18n"),
+		QStringLiteral("Verify Qt's own strings are translated for the UI language (for testing)"));
+	parser.addOption(selftestQtI18nOpt);
+	QCommandLineOption selftestMenuRolesOpt(QStringLiteral("selftest-menu-roles"),
+		QStringLiteral("Verify every menu-bar action has an explicit macOS menu role (for testing)"));
+	parser.addOption(selftestMenuRolesOpt);
+	QCommandLineOption selftestAppMenuOpt(QStringLiteral("selftest-app-menu"),
+		QStringLiteral("Verify which actions macOS merged into the application menu (for testing)"));
+	parser.addOption(selftestAppMenuOpt);
+    QCommandLineOption mergedeskFeaturesOpt(QStringLiteral("selftest-mergedesk-features"), QStringLiteral("Verify projects, exports and document conversion"));
+    QCommandLineOption safetyOpt(QStringLiteral("selftest-safety"), QStringLiteral("Verify atomic writes, encodings, backups and automatic merging"));
+    QCommandLineOption webOpt(QStringLiteral("selftest-web"), QStringLiteral("Verify local rendered webpage, text, HTML and screenshot comparison"));
+    parser.addOption(mergedeskFeaturesOpt);
+    parser.addOption(safetyOpt);
+    parser.addOption(webOpt);
+	parser.process(app);
+    if(parser.isSet(mergedeskFeaturesOpt))return lm::runFeatureTests();
+    if(parser.isSet(safetyOpt))return md::runSafetyTests();
+    if(parser.isSet(webOpt))return md::runWebTests();
+
+#ifdef Q_OS_LINUX
+	if (parser.isSet(selftestNativeDialogsOpt))
+	{
+		const QString directory = parser.value(selftestNativeDialogsOpt);
+		if (directory == QStringLiteral("inspect"))
+		{
+			printf("platform-theme-set=%d\nplatform-theme=%s\nplatform=%s\n",
+				qEnvironmentVariableIsSet("QT_QPA_PLATFORMTHEME"),
+				qgetenv("QT_QPA_PLATFORMTHEME").constData(),
+				qPrintable(QGuiApplication::platformName()));
+			return 0;
+		}
+		if (!QFileInfo(directory + QStringLiteral("/input.txt")).isFile()
+			|| !QFileInfo(directory + QStringLiteral("/selected-directory")).isDir())
+			return 2;
+		QWidget parent;
+		parent.setWindowTitle(QStringLiteral("MergeDesk native dialog test"));
+		parent.resize(360, 180);
+		parent.show();
+		// The portal theme probes FileChooser.version asynchronously during
+		// QApplication construction. Let that reply reach its watcher first.
+		QEventLoop ready;
+		QTimer::singleShot(100, &ready, &QEventLoop::quit);
+		ready.exec();
+		const struct {
+			const char *title;
+			const char *name;
+			QFileDialog::FileMode mode;
+			QFileDialog::AcceptMode accept;
+		} cases[] = {
+			{ "MergeDesk native open", "input.txt", QFileDialog::ExistingFile, QFileDialog::AcceptOpen },
+			{ "MergeDesk native save", "output.txt", QFileDialog::AnyFile, QFileDialog::AcceptSave },
+			{ "MergeDesk native folder", "selected-directory", QFileDialog::Directory, QFileDialog::AcceptOpen }
+		};
+		bool ok = true;
+		for (const auto &test : cases)
+		{
+			QFileDialog dialog(&parent, QLatin1String(test.title), directory);
+			dialog.setFileMode(test.mode);
+			dialog.setAcceptMode(test.accept);
+			if (test.mode == QFileDialog::Directory)
+				dialog.setOption(QFileDialog::ShowDirsOnly);
+			if (test.accept == QFileDialog::AcceptSave)
+				dialog.selectFile(QLatin1String(test.name));
+			QTimer deadline;
+			deadline.setSingleShot(true);
+			QObject::connect(&deadline, &QTimer::timeout, &dialog, &QDialog::reject);
+			deadline.start(5000);
+			const int result = dialog.exec();
+			const QStringList selected = dialog.selectedFiles();
+			const QString expected = directory + QLatin1Char('/') + QLatin1String(test.name);
+			const bool passed = result == QDialog::Accepted && selected == QStringList{ expected };
+			printf("%s: %s; selected=%s\n", test.title, passed ? "ok" : "FAILED",
+				qPrintable(selected.join(QLatin1Char(';'))));
+			ok = ok && passed;
+		}
+		return ok ? 0 : 1;
+	}
+#endif
+
+	if (parser.isSet(selftestArchiveMixedOpt))
+	{
+		// the open screen part expects Compare to close it
+		QSettings().setValue(QStringLiteral("General/CloseSelectorOnCompare"), true);
+		// WinMerge's DecompressArchive handles each side on its own: an
+		// archive compares against a plain folder. Enters through the
+		// drop/Finder route (handleIncomingPaths), the one users hit most
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString folder = dir.filePath(QStringLiteral("pasta"));
+		const QString other = dir.filePath(QStringLiteral("outra"));
+		for (const QString &root : { folder, other })
+		{
+			QDir().mkpath(root);
+			const auto put = [&root](const char *name, const char *content) {
+				QFile f(root + QLatin1Char('/') + QLatin1String(name));
+				if (!f.open(QIODevice::WriteOnly))
+					std::exit(2);
+				f.write(content);
+			};
+			put("same.txt", "same\n");
+			put("changed.txt", "folder side\n");
+			put("folder-only.txt", "x\n");
+		}
+		const QString zipPath = dir.filePath(QStringLiteral("pacote.zip"));
+		if (!writeTestArchive(zipPath, false,
+				{ { "same.txt", "same\n" }, { "changed.txt", "archive side\n" },
+				  { "archive-only.txt", "y\n" } }))
+			return 2;
+		const auto waitFor = [](FolderCompareView *view) {
+			for (int i = 0; i < 400 && view->isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+		using Item = lm::FolderCompareItem;
+		bool ok = MainWindow::allFolderLike({ folder, zipPath })
+			&& MainWindow::allFolderLike({ folder, zipPath, other })
+			&& !MainWindow::allFolderLike({ folder, dir.filePath(QStringLiteral("x.txt")) });
+
+		MainWindow window;
+		window.handleIncomingPaths({ folder, zipPath });
+		auto *view = window.findChild<FolderCompareView *>();
+		if (view == nullptr)
+		{
+			fprintf(stderr, "no folder comparison opened\n");
+			return 1;
+		}
+		waitFor(view);
+		const int same = view->rowCategoryForTest(QStringLiteral("same.txt"));
+		const int changed = view->rowCategoryForTest(QStringLiteral("changed.txt"));
+		const int folderOnly = view->rowCategoryForTest(QStringLiteral("folder-only.txt"));
+		const int archiveOnly = view->rowCategoryForTest(QStringLiteral("archive-only.txt"));
+		ok = ok && same == Item::Identical && changed == Item::Different
+			&& folderOnly == Item::LeftOnly && archiveOnly == Item::RightOnly;
+		printf("2-way: same %d, changed %d, folder-only %d, archive-only %d\n",
+			same, changed, folderOnly, archiveOnly);
+
+		// the file opened from the archive side shows its path inside the
+		// archive; the folder side keeps its real path
+		view->activateRowForTest(QStringLiteral("changed.txt"));
+		QCoreApplication::processEvents();
+		FileCompareView *file = nullptr;
+		for (FileCompareView *candidate : window.findChildren<FileCompareView *>())
+			if (!candidate->paths().at(0).isEmpty())
+				file = candidate;
+		const QString rightCaption = file != nullptr ? file->sideCaption(1) : QString();
+		const QString leftCaption = file != nullptr ? file->sideCaption(0) : QString();
+		printf("captions: left '%s', right '%s'\n", qPrintable(leftCaption),
+			qPrintable(rightCaption));
+		const bool openedPaths = file != nullptr && file->paths() == QStringList({
+			folder + QStringLiteral("/changed.txt"),
+			view->roots().at(1) + QStringLiteral("/changed.txt") });
+		const bool transient = file != nullptr
+			&& file->property("MergeDeskTransientComparison").toBool();
+		printf("2-way opened paths: %d, transient archive comparison: %d\n",
+			openedPaths, transient);
+		ok = ok && openedPaths && transient && leftCaption.isEmpty()
+			&& rightCaption == QStringLiteral("pacote.zip/changed.txt");
+
+		// 3-way: folder x archive x folder
+		MainWindow window3;
+		window3.handleIncomingPaths({ folder, zipPath, other });
+		auto *view3 = window3.findChild<FolderCompareView *>();
+		if (view3 == nullptr)
+			return 1;
+		waitFor(view3);
+		const int changed3 = view3->rowCategoryForTest(QStringLiteral("changed.txt"));
+		const int archiveOnly3 = view3->rowCategoryForTest(QStringLiteral("archive-only.txt"));
+		printf("3-way: changed %d, archive-only %d\n", changed3, archiveOnly3);
+		ok = ok && changed3 == Item::Different && archiveOnly3 == Item::MiddleOnly;
+		view3->activateRowForTest(QStringLiteral("changed.txt"));
+		QCoreApplication::processEvents();
+		FileCompareView *file3 = nullptr;
+		for (FileCompareView *candidate : window3.findChildren<FileCompareView *>())
+			if (candidate->paths().size() == 3)
+				file3 = candidate;
+		const bool openedPaths3 = file3 != nullptr && file3->paths() == QStringList({
+			folder + QStringLiteral("/changed.txt"),
+			view3->roots().at(1) + QStringLiteral("/changed.txt"),
+			other + QStringLiteral("/changed.txt") });
+		const bool archiveCaption3 = file3 != nullptr
+			&& file3->sideCaption(0).isEmpty()
+			&& file3->sideCaption(1) == QStringLiteral("pacote.zip/changed.txt")
+			&& file3->sideCaption(2).isEmpty()
+			&& file3->property("MergeDeskTransientComparison").toBool();
+		printf("3-way opened paths: %d, archive caption and transient marker: %d\n",
+			openedPaths3, archiveCaption3);
+		ok = ok && openedPaths3 && archiveCaption3;
+
+		// the open screen used to reject a folder with an archive as
+		// "mixing files and folders"
+		MainWindow windowSel;
+		windowSel.openSelector({ folder, zipPath });
+		auto *selector = windowSel.findChild<NewComparisonView *>();
+		auto *pathEdit = selector != nullptr
+			? selector->findChild<QLineEdit *>() : nullptr;
+		if (pathEdit == nullptr)
+			return 2;
+		QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+		QCoreApplication::sendEvent(pathEdit, &press);
+		QCoreApplication::processEvents();
+		QCoreApplication::processEvents();
+		const qsizetype opened = windowSel.findChildren<FolderCompareView *>().size();
+		const bool selectorGone = windowSel.findChild<NewComparisonView *>() == nullptr;
+		printf("open screen: folder comparisons opened %lld, selector closed %d\n",
+			static_cast<long long>(opened), selectorGone);
+		ok = ok && opened == 1 && selectorGone;
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestMnemonicsOpt))
+	{
+		// the letter after "&" picks an item from the keyboard: within a
+		// menu of the menu bar, and across the bar's titles, no two labels
+		// of the language in use may claim the same one. WinMerge's
+		// catalogs give a label the letter that is free in WinMerge's
+		// menu, and MergeDesk's menus do not hold quite the same items.
+		// The filter popups are WinMerge's menus item for item, doubles
+		// of their own included, with items shown and hidden by state:
+		// theirs are noted, not counted.
+		int shared = 0, noted = 0, menus = 0;
+		const auto letterOf = [](const QString &label)
+		{
+			// the first "&" that is not an "&&"
+			for (int i = 0; i + 1 < label.size(); ++i)
+			{
+				if (label.at(i) != QLatin1Char('&'))
+					continue;
+				if (label.at(i + 1) == QLatin1Char('&'))
+				{
+					++i;
+					continue;
+				}
+				return label.at(i + 1).toLower();
+			}
+			return QChar();
+		};
+		const auto report = [&](const QString &where, const QList<QAction *> &actions,
+			bool counts)
+		{
+			++menus;
+			QHash<QChar, QStringList> claims;
+			for (QAction *action : actions)
+			{
+				if (action->isSeparator() || !action->isVisible())
+					continue;
+				if (qEnvironmentVariableIsSet("MERGEDESK_SELFTEST_VERBOSE"))
+					printf("  [%s] %s\n", qPrintable(where), qPrintable(action->text()));
+				const QChar letter = letterOf(action->text());
+				if (!letter.isNull())
+					claims[letter].append(action->text());
+			}
+			for (auto it = claims.cbegin(); it != claims.cend(); ++it)
+				if (it.value().size() > 1)
+				{
+					(counts ? shared : noted) += 1;
+					printf("%s%s: '%s' shared by %s\n", counts ? "" : "(noted) ",
+						qPrintable(where), qPrintable(QString(it.key())),
+						qPrintable(it.value().join(QStringLiteral(" | "))));
+				}
+		};
+		const std::function<void(QMenu *, const QString &, bool)> walk =
+			[&](QMenu *menu, const QString &where, bool counts)
+		{
+			emit menu->aboutToShow(); // builds the dynamic menus
+			report(where, menu->actions(), counts);
+			for (QAction *action : menu->actions())
+				if (QMenu *submenu = action->menu())
+					walk(submenu, where + QStringLiteral(" > ")
+						+ submenu->title().remove(QLatin1Char('&')), counts);
+		};
+		{
+			MainWindow window;
+			report(QStringLiteral("menu bar"), window.menuBar()->actions(), true);
+			for (QAction *title : window.menuBar()->actions())
+				if (QMenu *menu = title->menu())
+					walk(menu, menu->title().remove(QLatin1Char('&')), true);
+		}
+		{
+			FileFilterMenu menu;
+			walk(&menu, QStringLiteral("file filter menu"), false);
+		}
+		{
+			LineFilterMenu menu;
+			walk(&menu, QStringLiteral("line filter menu"), false);
+		}
+		// the location pane's menu and the Go To dialog, upstream's own,
+		// whose translations shared letters too
+		{
+			QTemporaryDir dir;
+			const QString file = dir.filePath(QStringLiteral("a.txt"));
+			QFile f(file);
+			if (!f.open(QIODevice::WriteOnly))
+				return 2;
+			f.write("a\nb\n");
+			f.close();
+			FileCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ file, file }, &error))
+				return 2;
+			view.resize(800, 600);
+			view.show();
+			QCoreApplication::processEvents();
+			LocationPane::setMenuPresenterForTest([&](QMenu *menu) -> QAction * {
+				report(QStringLiteral("location pane menu"), menu->actions(), true);
+				return nullptr;
+			});
+			QContextMenuEvent event(QContextMenuEvent::Keyboard, QPoint(), QPoint());
+			QApplication::sendEvent(view.locationPaneForTest(), &event);
+			LocationPane::setMenuPresenterForTest({});
+			GoToDialog::setPresenterForTest([&](GoToDialog *dialog) {
+				// the dialog's labels and buttons, as actions of one menu
+				QList<QAction *> labels;
+				for (QWidget *widget : dialog->findChildren<QWidget *>())
+				{
+					QString text;
+					if (auto *label = qobject_cast<QLabel *>(widget))
+						text = label->text();
+					else if (auto *button = qobject_cast<QAbstractButton *>(widget))
+						text = button->text();
+					if (!text.isEmpty())
+						labels.append(new QAction(text, dialog));
+				}
+				report(QStringLiteral("Go To dialog"), labels, true);
+				return false;
+			});
+			view.showGoTo(0);
+			GoToDialog::setPresenterForTest({});
+			// the Find and Replace dialogs
+			const auto dialogLabels = [](QDialog *dialog) {
+				QList<QAction *> labels;
+				for (QWidget *widget : dialog->findChildren<QWidget *>())
+				{
+					QString text;
+					if (auto *label = qobject_cast<QLabel *>(widget))
+						text = label->text();
+					else if (auto *button = qobject_cast<QAbstractButton *>(widget))
+						text = button->text();
+					if (!text.isEmpty())
+						labels.append(new QAction(text, dialog));
+				}
+				return labels;
+			};
+			PaneSearch *search = view.paneSearchForTest(0);
+			search->editFind();
+			report(QStringLiteral("Find dialog"), dialogLabels(search->findDialog()), true);
+			search->findDialog()->hide();
+			search->editReplace();
+			report(QStringLiteral("Replace dialog"), dialogLabels(search->replaceDialog()), true);
+			search->replaceDialog()->hide();
+			TextMarkerDialog::setPresenterForTest([&](TextMarkerDialog *dialog) {
+				report(QStringLiteral("Marker dialog"), dialogLabels(dialog), true);
+				return false;
+			});
+			search->editMark();
+			TextMarkerDialog::setPresenterForTest({});
+			// the context menus of a pane and of a table's cell, on the sides
+			// they differ on
+			const auto reportMenu = [&](const QString &where, QMenu &menu) {
+				report(where, menu.actions(), true);
+				for (QAction *action : menu.actions())
+					if (action->menu() != nullptr)
+						report(where + QStringLiteral(" > ") + action->text(),
+							action->menu()->actions(), true);
+			};
+			for (int side = 0; side < 2; ++side)
+			{
+				QMenu menu;
+				view.buildPaneMenu(side, &menu);
+				reportMenu(QStringLiteral("pane menu %1").arg(side), menu);
+			}
+			TableCompareView table;
+			if (!table.compare(QStringList{ file, file }, &error))
+				return 2;
+			for (int side = 0; side < 2; ++side)
+			{
+				QMenu menu;
+				table.buildCellMenu(side, &menu);
+				reportMenu(QStringLiteral("cell menu %1").arg(side), menu);
+			}
+			TableCompareView table3;
+			if (!table3.compare(QStringList{ file, file, file }, &error))
+				return 2;
+			for (int side = 0; side < 3; ++side)
+			{
+				QMenu menu;
+				table3.buildCellMenu(side, &menu);
+				reportMenu(QStringLiteral("3-way cell menu %1").arg(side), menu);
+			}
+		}
+		printf("menus: %d, letters shared: %d (and %d noted in the filter popups)\n",
+			menus, shared, noted);
+		return shared == 0 ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestQtI18nOpt))
+	{
+		// Qt's own strings (dialog buttons, text-field context menus, the
+		// macOS application menu) come from qtbase_<lang>.qm, which the
+		// packages must ship next to the app: the 0.9.4 dmg and AppImages
+		// did not, so pt-BR users saw "Cancel" and "Paste" in English
+		const QString language = locale.name();
+		if (language.startsWith(QStringLiteral("en")))
+		{
+			printf("skipped: English UI\n");
+			return 0;
+		}
+		// held in variables so lupdate does not copy these into MergeDesk's
+		// own catalog: the answer must come from Qt's qtbase_<lang>.qm, or
+		// this test would pass without it
+		const char *themeContext = "QPlatformTheme";
+		const char *cancelText = "Cancel";
+		const char *textControlContext = "QWidgetTextControl";
+		const char *pasteText = "&Paste";
+		const QString cancel = QCoreApplication::translate(themeContext, cancelText);
+		const QString paste = QCoreApplication::translate(textControlContext, pasteText);
+		// MergeDesk's own catalog is in the binary: a language it is
+		// translated to has its menus in that language
+		const QString fileMenu = MainWindow::tr("&File");
+		printf("%s: Cancel -> %s, &Paste -> %s, &File -> %s (translations: %s)\n",
+			qPrintable(language), qPrintable(cancel), qPrintable(paste), qPrintable(fileMenu),
+			qPrintable(QLibraryInfo::path(QLibraryInfo::TranslationsPath)));
+		return (cancel != QStringLiteral("Cancel")
+			&& paste != QStringLiteral("&Paste")
+			&& fileMenu != QStringLiteral("&File")) ? 0 : 1;
+	}
+
+    if (parser.isSet(selftestStarPromptOpt)) {
+        // MergeDesk deliberately contains no promotional prompt or usage counter.
+        lm::StarPrompt::instance()->noteAppStarted();
+        for (int i=0;i<100;++i)lm::StarPrompt::instance()->noteComparisonOpened();
+        const bool ok=!lm::StarPrompt::instance()->due()
+            && lm::StarPrompt::instance()->createBar(nullptr)==nullptr
+            && lm::projectPage()==QUrl(QStringLiteral("https://github.com/Davoda1/MergeDesk"));
+        printf("no promotional prompt: %s\n",ok?"ok":"FAILED");return ok?0:1;
+    }
+
+	if (parser.isSet(selftestMenuRolesOpt))
+	{
+		// no menu-bar action may be left to Qt's text heuristic (it once
+		// promoted pt-BR "Sobreposicao" to the About item on macOS), and
+		// the application-menu roles each belong to exactly one action
+		MainWindow window;
+		const std::function<void(QWidget *)> expand = [&expand](QWidget *w) {
+			for (QAction *action : w->actions())
+				if (QMenu *submenu = action->menu())
+				{
+					emit submenu->aboutToShow(); // builds dynamic menus
+					expand(submenu);
+				}
+		};
+		expand(window.menuBar());
+		int heuristic = 0, about = 0, prefs = 0, quit = 0;
+		const std::function<void(QWidget *)> walk = [&](QWidget *w) {
+			for (QAction *action : w->actions())
+			{
+				switch (action->menuRole())
+				{
+				case QAction::TextHeuristicRole:
+					++heuristic;
+					fprintf(stderr, "heuristic role: %s\n",
+						qPrintable(action->text()));
+					break;
+				case QAction::AboutRole: ++about; break;
+				case QAction::PreferencesRole: ++prefs; break;
+				case QAction::QuitRole: ++quit; break;
+				default: break;
+				}
+				if (QMenu *submenu = action->menu())
+					walk(submenu);
+			}
+		};
+		walk(window.menuBar());
+		printf("heuristic: %d, about: %d, preferences: %d, quit: %d\n",
+			heuristic, about, prefs, quit);
+		return (heuristic == 0 && about == 1 && prefs == 1 && quit == 1)
+			? 0 : 1;
+	}
+
+	if (parser.isSet(selftestDesktopOpt))
+	{
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString home = dir.path();
+		// a launcher path with a space and a reserved character exercises
+		// the Exec quoting of the Desktop Entry spec
+		const QString launcher = home + QStringLiteral("/My Apps/MergeDesk$1.AppImage");
+		QStringList written;
+		QString error;
+		bool ok = lm::installDesktopIntegration(home, launcher, &written, &error);
+		const QString desktopFile = home + QStringLiteral("/applications/mergedesk.desktop");
+		QFile file(desktopFile);
+		if (!file.open(QIODevice::ReadOnly))
+			std::exit(2);
+		const QString entry = QString::fromUtf8(file.readAll());
+		file.close();
+		const QString expectedExec = QStringLiteral(
+			"Exec=\"") + home + QStringLiteral("/My Apps/MergeDesk\\\\$1.AppImage\" %F");
+		ok = ok && written.size() == 7 && entry.contains(expectedExec)
+			&& entry.contains(QStringLiteral("TryExec=") + launcher)
+			&& entry.contains(QStringLiteral("Name=MergeDesk"))
+			&& entry.contains(QStringLiteral("Icon=mergedesk"))
+			&& entry.contains(QStringLiteral("X-MergeDesk-Launcher="))
+			&& QFileInfo::exists(home + QStringLiteral("/icons/hicolor/512x512/apps/mergedesk.png"));
+		printf("installed: %lld files, exec ok %d\n",
+			static_cast<long long>(written.size()), entry.contains(expectedExec));
+		if (!ok)
+			fprintf(stderr, "%s\n%s\n", qPrintable(error), qPrintable(entry));
+
+		QStringList removed;
+		ok = lm::removeDesktopIntegration(home, &removed, &error) && ok
+			&& removed.size() == 7 && !QFileInfo::exists(desktopFile)
+			&& !QFileInfo::exists(home + QStringLiteral("/icons/hicolor/16x16/apps/mergedesk.png"));
+		printf("removed: %lld files\n", static_cast<long long>(removed.size()));
+
+		// an entry MergeDesk did not write is left alone
+		QDir().mkpath(home + QStringLiteral("/applications"));
+		QFile foreign(desktopFile);
+		if (!foreign.open(QIODevice::WriteOnly))
+			std::exit(2);
+		foreign.write("[Desktop Entry]\nName=Mine\nExec=mergedesk\n");
+		foreign.close();
+		const bool refused = !lm::removeDesktopIntegration(home, nullptr, &error)
+			&& QFileInfo::exists(desktopFile);
+		printf("foreign entry kept: %d\n", refused);
+		ok = ok && refused;
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(screenshotAboutOpt))
+	{
+		AboutDialog dialog;
+		dialog.show();
+		QCoreApplication::processEvents();
+		const QString path = parser.value(screenshotAboutOpt);
+		if (!dialog.grab().save(path))
+			return 2;
+		// the contributors list, rendered the way the button shows it
+		QTextBrowser browser;
+		browser.setMarkdown(AboutDialog::contributorsMarkdown());
+		browser.resize(640, 1400);
+		browser.show();
+		QCoreApplication::processEvents();
+		QString contributorsPath = path;
+		contributorsPath.insert(contributorsPath.lastIndexOf(QLatin1Char('.')),
+			QStringLiteral("-contributors"));
+		return browser.grab().save(contributorsPath) ? 0 : 2;
+	}
+
+	if (parser.isSet(screenshotOptionsOpt))
+	{
+		// every tree item in display order, one image each
+		OptionsDialog dialog;
+		dialog.show();
+		const QString path = parser.value(screenshotOptionsOpt);
+		const int dot = path.lastIndexOf(QLatin1Char('.'));
+		for (int i = 0; i < dialog.categoriesForTest().size(); ++i)
+		{
+			dialog.selectCategoryForTest(i);
+			QCoreApplication::processEvents();
+			QString target = path;
+			target.insert(dot < 0 ? target.size() : dot,
+				QStringLiteral("-%1").arg(i));
+			if (!dialog.grab().save(target))
+				return 2;
+		}
+		return 0;
+	}
+
+	if (parser.isSet(screenshotSelectorOpt))
+	{
+		// the selection screen as the given paths leave it
+		MainWindow window;
+		window.resize(1100, 700);
+		window.show();
+		window.openSelector(parser.positionalArguments());
+		if (auto *selector = window.findChild<NewComparisonView *>())
+			selector->verifyPathsForTest();
+		QCoreApplication::processEvents();
+		return window.grab().save(parser.value(screenshotSelectorOpt)) ? 0 : 2;
+	}
+
+	if (parser.isSet(screenshotFiltersOpt))
+	{
+		// the three pages over the saved filters, the line and substitution
+		// ones with a sample row each, added with the pages' own buttons;
+		// nothing is saved
+		FiltersDialog dialog;
+		dialog.show();
+		QCoreApplication::processEvents();
+		auto *lines = dialog.findChild<QTreeWidget *>(QStringLiteral("lineFilters"));
+		auto *pairs = dialog.findChild<QTreeWidget *>(QStringLiteral("substitutionFilters"));
+		auto *newLine = dialog.findChild<QPushButton *>(QStringLiteral("newLineFilter"));
+		auto *addPair = dialog.findChild<QPushButton *>(QStringLiteral("addSubstitutionFilter"));
+		if (lines == nullptr || pairs == nullptr || newLine == nullptr || addPair == nullptr)
+			return 2;
+		newLine->click();
+		QCoreApplication::processEvents();
+		if (auto *editor = lines->viewport()->findChild<QLineEdit *>())
+		{
+			editor->setText(QStringLiteral("^\\s*Build date:"));
+			QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(editor, &enter);
+			QCoreApplication::processEvents();
+		}
+		lines->topLevelItem(lines->topLevelItemCount() - 1)->setCheckState(0, Qt::Checked);
+		addPair->click();
+		QTreeWidgetItem *pair = pairs->topLevelItem(pairs->topLevelItemCount() - 1);
+		pair->setText(1, QStringLiteral("colour"));
+		pair->setCheckState(3, Qt::Checked);
+		const QString path = parser.value(screenshotFiltersOpt);
+		const int dot = path.lastIndexOf(QLatin1Char('.'));
+		const int pages[] = { FiltersDialog::FileFiltersPage, FiltersDialog::LineFiltersPage,
+			FiltersDialog::SubstitutionFiltersPage };
+		for (int page : pages)
+		{
+			dialog.showPage(page);
+			QCoreApplication::processEvents();
+			QString target = path;
+			target.insert(dot < 0 ? target.size() : dot, QStringLiteral("-%1").arg(page));
+			if (!dialog.grab().save(target))
+				return 2;
+		}
+		// the "=" button's menu, with one of its submenus, and the Filter
+		// Condition dialog as "Custom Range..." of a file size opens it
+		const auto named = [&path, dot](const char *suffix) {
+			QString target = path;
+			target.insert(dot < 0 ? target.size() : dot, QLatin1String(suffix));
+			return target;
+		};
+		if (auto *menu = dialog.findChild<FileFilterMenu *>())
+		{
+			menu->ensurePolished();
+			menu->adjustSize();
+			if (!menu->grab().save(named("-menu")))
+				return 2;
+			if (QAction *item = menu->actionForTest(FileFilterMenu::SizeFirst))
+				if (auto *submenu = qobject_cast<QMenu *>(item->parent()))
+				{
+					submenu->ensurePolished();
+					submenu->adjustSize();
+					if (!submenu->grab().save(named("-submenu")))
+						return 2;
+				}
+		}
+		FilterConditionDialog condition(false, 0, QStringLiteral("Size"), QString(),
+			QStringLiteral("isWithin(%1, %2, %3)"), QStringLiteral("%1"), false);
+		condition.show();
+		QCoreApplication::processEvents();
+		return condition.grab().save(named("-condition")) ? 0 : 2;
+	}
+
+	if (parser.isSet(selftestOptionsOpt))
+	{
+		// WinMerge's Preferences layout: the page tree, a category opening
+		// its first page with the path in the title, the backup switch on
+		// Backup Files, the highlighting on Editor > General, Codepage
+		// last, and Defaults resetting the current page only.
+		// Nothing is saved: the dialog is never accepted.
+		OptionsDialog dialog;
+		const QList<OptionsDialog::CategoryInfo> tree = dialog.categoriesForTest();
+		const int depths[] = { 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0 };
+		const int pages[] = { OptionsDialog::GeneralPage, -1,
+			OptionsDialog::ComparePage, OptionsDialog::FolderPage, OptionsDialog::TablePage,
+			OptionsDialog::BinaryPage, OptionsDialog::ImagePage, OptionsDialog::MessageBoxesPage,
+			-1, OptionsDialog::EditorPage, OptionsDialog::EditorCompareMergePage,
+			OptionsDialog::BackupPage, OptionsDialog::CodepagePage };
+		bool ok = tree.size() == 13;
+		for (int i = 0; ok && i < tree.size(); ++i)
+			ok = tree.at(i).depth == depths[i] && tree.at(i).page == pages[i];
+		printf("tree: %s\n", ok ? "ok" : "wrong");
+
+		// the Compare category shows Compare > General, Editor its General
+		const int expectedPage[] = { OptionsDialog::GeneralPage,
+			OptionsDialog::ComparePage, OptionsDialog::ComparePage,
+			OptionsDialog::FolderPage, OptionsDialog::TablePage, OptionsDialog::BinaryPage,
+			OptionsDialog::ImagePage, OptionsDialog::MessageBoxesPage,
+			OptionsDialog::EditorPage, OptionsDialog::EditorPage,
+			OptionsDialog::EditorCompareMergePage, OptionsDialog::BackupPage,
+			OptionsDialog::CodepagePage };
+		for (int i = 0; ok && i < 13; ++i)
+		{
+			dialog.selectCategoryForTest(i);
+			const bool nested = dialog.windowTitle().contains(QStringLiteral(" > "));
+			printf("item %d: page %d, title \"%s\"\n", i,
+				dialog.currentPageForTest(), qPrintable(dialog.windowTitle()));
+			ok = dialog.currentPageForTest() == expectedPage[i]
+				&& nested == ((i >= 1 && i <= 6) || (i >= 8 && i <= 10));
+		}
+
+		const auto boxes = [&dialog](OptionsDialog::Page page) {
+			return dialog.pageForTest(page)->findChildren<QCheckBox *>();
+		};
+		ok = ok && boxes(OptionsDialog::GeneralPage).size() == 7
+			&& boxes(OptionsDialog::BackupPage).size() == 1;
+
+		// Defaults on another page leaves General alone
+		for (QCheckBox *box : boxes(OptionsDialog::GeneralPage))
+			box->setChecked(true);
+		boxes(OptionsDialog::BackupPage).first()->setChecked(false);
+		dialog.selectCategoryForTest(2); // Compare > General
+		dialog.restoreDefaultsForTest();
+		for (QCheckBox *box : boxes(OptionsDialog::GeneralPage))
+			ok = ok && box->isChecked();
+		ok = ok && !boxes(OptionsDialog::BackupPage).first()->isChecked();
+		dialog.selectCategoryForTest(0); // General
+		dialog.restoreDefaultsForTest();
+		// WinMerge's defaults: all off but "Automatically verify paths"
+		const QString verifyPaths = OptionsDialog::tr(
+			"Automatically verify paths in the \"Select Files or Folders\" screen");
+		for (QCheckBox *box : boxes(OptionsDialog::GeneralPage))
+			ok = ok && box->isChecked() == (box->text() == verifyPaths);
+		dialog.selectCategoryForTest(11); // Backup Files
+		dialog.restoreDefaultsForTest();
+		ok = ok && boxes(OptionsDialog::BackupPage).first()->isChecked();
+
+		// Editor > General: "Highlight syntax" on, "Built-in first" by default
+		{
+			const QList<QCheckBox *> editorBoxes = boxes(OptionsDialog::EditorPage);
+			auto *mode = dialog.pageForTest(OptionsDialog::EditorPage)->findChild<QComboBox *>();
+			// (and "Preserve original EOL" off)
+			ok = ok && editorBoxes.size() == 2 && mode != nullptr && mode->count() == 4;
+			if (ok)
+			{
+				editorBoxes.first()->setChecked(false);
+				editorBoxes.last()->setChecked(true);
+				mode->setCurrentIndex(3);
+				dialog.selectCategoryForTest(9);
+				dialog.restoreDefaultsForTest();
+				ok = editorBoxes.first()->isChecked() && !editorBoxes.last()->isChecked()
+					&& mode->currentIndex() == 1;
+			}
+			printf("editor page: %s\n", ok ? "ok" : "wrong");
+		}
+
+		// every row of the Message Boxes list shows its check box (the
+		// macOS 27 style left all but the first one out)
+		{
+			dialog.selectCategoryForTest(7); // Message Boxes
+			dialog.grab(); // lays the pages out
+			auto *list = dialog.pageForTest(OptionsDialog::MessageBoxesPage)
+				->findChild<QTreeWidget *>();
+			const QImage image = list != nullptr
+				? list->viewport()->grab().toImage() : QImage();
+			const qreal ratio = image.devicePixelRatio();
+			int rows = 0, drawn = 0;
+			for (int i = 0; list != nullptr && i < list->topLevelItemCount(); ++i)
+			{
+				const QRect row = list->visualItemRect(list->topLevelItem(i));
+				const QRect box(qRound((row.left() + 2) * ratio), qRound((row.top() + 2) * ratio),
+					qRound(26 * ratio), qRound((row.height() - 4) * ratio));
+				const QRgb background = image.pixel(box.left(), box.top());
+				bool inked = false;
+				for (int y = box.top(); y <= box.bottom() && !inked; ++y)
+					for (int x = box.left(); x <= box.right() && !inked; ++x)
+						inked = image.rect().contains(x, y) && image.pixel(x, y) != background;
+				++rows;
+				drawn += inked ? 1 : 0;
+			}
+			printf("item check boxes: %d of %d drawn (%s)\n", drawn, rows,
+				lm::itemCheckBoxesNeedHelp() ? "painted here" : "platform style");
+			ok = ok && rows > 0 && drawn == rows;
+		}
+		// English is the default, followed by the three supported catalogs.
+		// Every offered translation must load and cover menus and file errors.
+		{
+			auto *languages = dialog.pageForTest(OptionsDialog::GeneralPage)
+				->findChild<QComboBox *>(QStringLiteral("language"));
+			QStringList offered;
+			for (int i = 0; languages != nullptr && i < languages->count(); ++i)
+				offered.append(languages->itemData(i).toString());
+			const QString prefix = QStringLiteral("mergedesk_");
+			QStringList catalogs;
+			for (const QString &name : QDir(QStringLiteral(":/i18n")).entryList(
+					{ prefix + QStringLiteral("*.qm") }, QDir::Files, QDir::Name))
+				catalogs.append(QFileInfo(name).completeBaseName().mid(prefix.size()));
+			const QStringList expectedLanguages = { QStringLiteral("en_US"),
+				QStringLiteral("hu"), QStringLiteral("de"), QStringLiteral("fr") };
+			const QStringList expectedCatalogs = { QStringLiteral("de"),
+				QStringLiteral("fr"), QStringLiteral("hu") };
+			bool listed = offered == expectedLanguages && catalogs == expectedCatalogs
+				&& languages->currentData().toString() == QStringLiteral("en_US");
+			// (held in variables: the answer comes from the catalog asked)
+			const char *menuContext = "MainWindow";
+			const char *menuText = "&File";
+			const char *fileErrorContext = "SafeFileOps";
+			const char *fileErrorText = "The destination path is empty.";
+			for (const QString &code : catalogs)
+			{
+				QTranslator catalog;
+				const bool loaded = catalog.load(QLocale(code), QStringLiteral("mergedesk"),
+					QStringLiteral("_"), QStringLiteral(":/i18n"));
+				const QString file = loaded ? catalog.translate(menuContext, menuText) : QString();
+				const QString fileError = loaded
+					? catalog.translate(fileErrorContext, fileErrorText) : QString();
+				printf("language %s: %s, &File -> %s\n", qPrintable(code),
+					offered.contains(code) ? "offered" : "NOT OFFERED", qPrintable(file));
+				listed = listed && offered.contains(code) && !file.isEmpty()
+					&& file != QLatin1String(menuText) && !fileError.isEmpty()
+					&& fileError != QLatin1String(fileErrorText);
+			}
+			ok = ok && listed;
+		}
+		printf("options dialog: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestThemeOpt))
+	{
+		// the theme lives in Options > General (not in the View menu) and
+		// drives the whole application: on Linux the palette, on macOS the
+		// appearance asked of the system
+		bool ok = true;
+		const auto check = [&ok](const char *what, bool passed) {
+			printf("%s: %s\n", what, passed ? "ok" : "FAILED");
+			ok = ok && passed;
+		};
+		const auto isDark = [](const QPalette &palette) {
+			return palette.color(QPalette::Window).lightness()
+				< palette.color(QPalette::WindowText).lightness();
+		};
+		lm::Theme *theme = lm::Theme::instance();
+		const QColor systemWindow = qApp->palette().color(QPalette::Window);
+		// (CI goes by this that it has the style it set out to test)
+		printf("style: %s\n", qPrintable(qApp->style()->objectName()));
+		check("starts following the system", theme->mode() == lm::ThemeMode::System);
+		int changes = 0;
+		QObject::connect(theme, &lm::Theme::changed, [&changes]() { ++changes; });
+
+		{
+			MainWindow window;
+			bool themeMenu = false;
+			const std::function<void(QWidget *)> walk = [&](QWidget *w) {
+				for (QAction *action : w->actions())
+					if (QMenu *submenu = action->menu())
+					{
+						const QString title = submenu->title().remove(QLatin1Char('&'));
+						themeMenu = themeMenu || title == QStringLiteral("Theme")
+							|| title == QStringLiteral("Tema");
+						walk(submenu);
+					}
+			};
+			walk(window.menuBar());
+			check("no Theme menu", !themeMenu);
+		}
+
+		OptionsDialog dialog;
+		auto *combo = dialog.pageForTest(OptionsDialog::GeneralPage)
+			->findChild<QComboBox *>(QStringLiteral("theme"));
+		check("theme choice on the General page", combo != nullptr && combo->count() == 3
+			&& combo->currentIndex() == 0);
+		if (combo == nullptr)
+			return 1;
+
+		combo->setCurrentIndex(2); // Dark
+		dialog.saveForTest();
+		QCoreApplication::processEvents();
+		check("dark saved", theme->mode() == lm::ThemeMode::Dark && theme->dark()
+			&& QSettings().value(QStringLiteral("Appearance/Theme")).toString()
+				== QStringLiteral("dark")
+			&& changes == 1);
+#ifdef Q_OS_MACOS
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+		// only the real platform answers the request (dmg validation)
+		if (QGuiApplication::platformName() == QStringLiteral("cocoa"))
+			check("dark appearance requested",
+				qApp->styleHints()->colorScheme() == Qt::ColorScheme::Dark);
+#endif
+#else
+		check("dark application palette", isDark(qApp->palette())
+			&& isDark(QToolTip::palette()));
+#endif
+
+		combo->setCurrentIndex(1); // Light
+		dialog.saveForTest();
+		QCoreApplication::processEvents();
+		check("light saved", theme->mode() == lm::ThemeMode::Light && !theme->dark()
+			&& changes == 2);
+#ifdef Q_OS_MACOS
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+		if (QGuiApplication::platformName() == QStringLiteral("cocoa"))
+			check("light appearance requested",
+				qApp->styleHints()->colorScheme() == Qt::ColorScheme::Light);
+#endif
+#else
+		check("light application palette", !isDark(qApp->palette())
+			&& !isDark(QToolTip::palette()));
+#endif
+
+		// Defaults: back to the system, and to the platform's own palette
+		dialog.restoreDefaultsForTest();
+		check("defaults follow the system", combo->currentIndex() == 0);
+		dialog.saveForTest();
+		QCoreApplication::processEvents();
+		check("system restored", theme->mode() == lm::ThemeMode::System
+			&& QSettings().value(QStringLiteral("Appearance/Theme")).toString()
+				== QStringLiteral("system"));
+#ifndef Q_OS_MACOS
+		check("platform palette back",
+			qApp->palette().color(QPalette::Window) == systemWindow
+			&& isDark(qApp->palette()) == theme->dark());
+#else
+		Q_UNUSED(systemWindow);
+#endif
+
+		// saving the same choice again changes nothing
+		const int before = changes;
+		dialog.saveForTest();
+		check("unchanged choice is quiet", changes == before);
+
+		// a theme is no edit of the files compared, whatever their language
+		{
+			QTemporaryDir dir;
+			if (!dir.isValid())
+				return 2;
+			const auto write = [&dir](const char *name, const QByteArray &bytes) {
+				const QString path = dir.filePath(QString::fromLatin1(name));
+				QFile f(path);
+				if (!f.open(QIODevice::WriteOnly))
+					std::exit(2);
+				f.write(bytes);
+				return path;
+			};
+			const auto same = [&](const char *what, const QStringList &paths) {
+				FileCompareView view;
+				QString error;
+				if (!view.compare(paths, &error))
+					std::exit(2);
+				QCoreApplication::processEvents();
+				const int differences = view.diffCount();
+				bool stale = false;
+				for (const lm::ThemeMode mode : { lm::ThemeMode::Dark, lm::ThemeMode::Light, lm::ThemeMode::System })
+				{
+					theme->setMode(mode);
+					QCoreApplication::processEvents();
+					stale = stale || view.diffStaleForTest();
+				}
+				printf("  %s: stale %d, modified %d, %d differences\n", what, stale, view.isModified(), view.diffCount());
+				check(what, !stale && !view.isModified() && view.diffCount() == differences);
+			};
+			same("a change of theme leaves plain text compared",
+				{ write("left.txt", "a\nb\nc\n"), write("right.txt", "a\nX\nc\nd\n") });
+			same("and a highlighted language too",
+				{ write("left.cpp", "int a; // one\nint b;\n"), write("right.cpp", "int a; // two\nint c;\nint d;\n") });
+		}
+
+#ifndef Q_OS_MACOS
+		// the offscreen platform's palette is a light one, so that Dark
+		// replaces it: Breeze is told of the scheme (it reads the property),
+		// and the colors it left on a menu bar go, or the text stays that of
+		// the theme before
+		if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+		{
+#ifdef Q_OS_UNIX
+			// KDE locates these files through XDG on Unix. Windows uses its
+			// own GenericDataLocation and has no KDE color-scheme contract.
+			QTemporaryDir dataHome;
+			if (!dataHome.isValid() || !QDir(dataHome.path()).mkdir(QStringLiteral("color-schemes")))
+				return 2;
+			const QString darkScheme = dataHome.filePath(QStringLiteral("color-schemes/BreezeDark.colors"));
+			QFile schemeFile(darkScheme);
+			if (!schemeFile.open(QIODevice::WriteOnly))
+				return 2;
+			schemeFile.close();
+			qputenv("XDG_DATA_HOME", dataHome.path().toUtf8());
+			qputenv("XDG_DATA_DIRS", dataHome.path().toUtf8());
+#endif
+			const auto schemeProperty = []() { return qApp->property("KDE_COLOR_SCHEME_PATH"); };
+			QMainWindow window;
+			QPalette stale;
+			stale.setColor(QPalette::WindowText, Qt::magenta);
+			const auto menuText = [&window]() {
+				return window.menuBar()->palette().color(QPalette::WindowText);
+			};
+			window.menuBar()->setPalette(stale);
+			theme->setMode(lm::ThemeMode::Dark);
+#ifdef Q_OS_UNIX
+			check("Dark names the style's dark scheme", schemeProperty().toString() == darkScheme);
+#else
+			check("Dark keeps the application and tooltip palettes dark",
+				isDark(qApp->palette()) && isDark(QToolTip::palette()));
+#endif
+			check("and the menu bar gives up the theme before's colors", menuText() != QColor(Qt::magenta));
+			window.menuBar()->setPalette(stale);
+			theme->setMode(lm::ThemeMode::Light);
+			check("Light, the platform's own, names none", !schemeProperty().isValid());
+			check("and the menu bar gives them up again", menuText() != QColor(Qt::magenta));
+			// the desktop hands over a palette of its own later, as Plasma's
+			// platform theme does when its color scheme changes: a fixed
+			// choice stays, whether it kept the platform's palette or not
+			QPalette desktopDark;
+			desktopDark.setColor(QPalette::Window, QColor(0x20, 0x23, 0x26));
+			desktopDark.setColor(QPalette::WindowText, QColor(0xfc, 0xfc, 0xfc));
+			window.menuBar()->setPalette(stale);
+			QApplication::setPalette(desktopDark);
+			QCoreApplication::processEvents();
+			check("Light stays when the desktop turns dark", !isDark(qApp->palette())
+				&& menuText() != QColor(Qt::magenta));
+			theme->setMode(lm::ThemeMode::Dark);
+			QPalette desktopLight;
+			desktopLight.setColor(QPalette::Window, QColor(0xef, 0xf0, 0xf1));
+			desktopLight.setColor(QPalette::WindowText, QColor(0x23, 0x26, 0x29));
+			QApplication::setPalette(desktopLight);
+			QCoreApplication::processEvents();
+			check("and Dark when it turns light", isDark(qApp->palette())
+#ifdef Q_OS_UNIX
+				&& schemeProperty().toString() == darkScheme
+#endif
+				);
+			theme->setMode(lm::ThemeMode::System);
+		}
+#endif
+
+#ifdef LM_HAVE_PORTAL
+		// the portal's color-scheme values, bare (ReadOne, SettingChanged)
+		// or wrapped twice (the deprecated Read)
+		using Portal = lm::PortalAppearance;
+		const QVariant twice = QVariant::fromValue(QDBusVariant(
+			QVariant::fromValue(QDBusVariant(QVariant(2u)))));
+		check("portal values",
+			Portal::schemeFromValue(QVariant(1u)) == Portal::PreferDark
+			&& Portal::schemeFromValue(QVariant(0u)) == Portal::NoPreference
+			&& Portal::schemeFromValue(twice) == Portal::PreferLight
+			&& Portal::schemeFromValue(QVariant(7u)) == Portal::Unavailable
+			&& Portal::schemeFromValue(QVariant(QStringLiteral("dark"))) == Portal::Unavailable);
+#endif
+		printf("theme: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestPortalOpt))
+	{
+#ifdef LM_HAVE_PORTAL
+		// the fake portal says "prefer dark", then switches to "prefer
+		// light": System mode follows it, the whole palette included
+		const auto isDark = [](const QPalette &palette) {
+			return palette.color(QPalette::Window).lightness()
+				< palette.color(QPalette::WindowText).lightness();
+		};
+		lm::Theme *theme = lm::Theme::instance();
+		const bool startedDark = theme->dark() && isDark(qApp->palette());
+		printf("started dark: %d\n", startedDark);
+		QEventLoop loop;
+		QObject::connect(theme, &lm::Theme::changed, &loop, &QEventLoop::quit);
+		QTimer::singleShot(15000, &loop, &QEventLoop::quit);
+		loop.exec();
+		const bool nowLight = !theme->dark() && !isDark(qApp->palette());
+		printf("switched to light: %d\n", nowLight);
+		return startedDark && nowLight ? 0 : 1;
+#else
+		printf("no desktop portal on this platform\n");
+		return 0;
+#endif
+	}
+
+	if (parser.isSet(selftestReloadOpt))
+	{
+		// WinMerge's file change checks (CheckFileChanged, OnFileReload and
+		// DoSave's overwrite question) under the three auto-reload modes;
+		// the test answers the questions and the save prompt
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 4; ++i)
+				QCoreApplication::processEvents();
+		};
+		// another application's write: new content with a later time, so
+		// the change shows whatever the sizes and the clock's resolution
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			const QDateTime before = QFileInfo(path).lastModified();
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+			if (before.isValid())
+				f.setFileTime(before.addSecs(3), QFileDevice::FileModificationTime);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::ReadOnly))
+				std::exit(2);
+			return f.readAll();
+		};
+		const auto setMode = [](OptionsDialog::AutoReload mode)
+		{
+			QSettings().setValue(QStringLiteral("General/AutoReloadModifiedFiles"),
+				static_cast<int>(mode));
+		};
+		const auto reloadQuestion = [](const QString &path) {
+			return QCoreApplication::translate("MessageBoxes",
+				"Another application updated\n%1\nsince last scan.\n\nReload?").arg(path);
+		};
+		const auto overwriteQuestion = [](const QString &path) {
+			return QCoreApplication::translate("MessageBoxes",
+				"Another application updated\n%1\nsince MergeDesk loaded it.\n\nOverwrite?")
+				.arg(path);
+		};
+		QStringList asked;
+		bool answerYes = true;
+		bool dontAskAgain = false;
+		lm::setQuestionSinkForTest([&](const QString &text, bool *dontAsk) {
+			asked.append(text);
+			*dontAsk = dontAskAgain;
+			return answerYes;
+		});
+		QStringList shown;
+		lm::setMessageSinkForTest([&shown](const QString &text) { shown.append(text); });
+		int savePrompts = 0;
+		int saveChoice = 2; // 0 cancels, 1 saves, 2 discards
+		MainWindow::setSavePromptForTest([&]() { ++savePrompts; return saveChoice; });
+		lm::setCompareOptionsForTest(0);
+		const QString a = dir.filePath(QStringLiteral("a.txt"));
+		const QString b = dir.filePath(QStringLiteral("b.txt"));
+		const QStringList three = { QStringLiteral("one"), QStringLiteral("two"),
+			QStringLiteral("three") };
+		write(a, "one\ntwo\nthree\n");
+		write(b, "one\ntwo\nthree\n");
+
+		// IsFileChangedOnDisk
+		{
+			const lm::FileStamp stamp = lm::fileStamp(b);
+			bool fine = lm::fileChangedOnDisk(b, stamp) == lm::FileChange::NoChange;
+			{
+				QFile f(b);
+				if (!f.open(QIODevice::Append))
+					std::exit(2);
+				f.setFileTime(stamp.modified.addSecs(-90), QFileDevice::FileModificationTime);
+			}
+			fine = fine && lm::fileChangedOnDisk(b, stamp) == lm::FileChange::Changed;
+			{
+				QFile f(b);
+				if (!f.open(QIODevice::Append))
+					std::exit(2);
+				f.write("four\n");
+				f.setFileTime(stamp.modified, QFileDevice::FileModificationTime);
+			}
+			fine = fine && lm::fileChangedOnDisk(b, stamp) == lm::FileChange::Changed;
+			QFile::remove(b);
+			fine = fine && lm::fileChangedOnDisk(b, stamp) == lm::FileChange::Removed
+				&& lm::fileChangedOnDisk(QString(), lm::FileStamp()) == lm::FileChange::Removed;
+			check(fine, "file stamps: another time, another size, removal");
+			write(b, "one\ntwo\nthree\n");
+		}
+
+		// the option: WinMerge's default, on the General page
+		{
+			bool fine = OptionsDialog::autoReloadModifiedFiles()
+				== OptionsDialog::AutoReloadOnWindowActivated;
+			OptionsDialog dialog;
+			auto *combo = dialog.pageForTest(OptionsDialog::GeneralPage)
+				->findChild<QComboBox *>(QStringLiteral("autoReload"));
+			fine = fine && combo != nullptr && combo->count() == 3
+				&& combo->currentIndex() == 1;
+			if (combo != nullptr)
+			{
+				combo->setCurrentIndex(2);
+				dialog.saveForTest();
+				fine = fine && OptionsDialog::autoReloadModifiedFiles()
+					== OptionsDialog::AutoReloadImmediately;
+				dialog.selectCategoryForTest(0);
+				dialog.restoreDefaultsForTest();
+				fine = fine && combo->currentIndex() == 1;
+				dialog.saveForTest();
+			}
+			check(fine && OptionsDialog::autoReloadModifiedFiles()
+				== OptionsDialog::AutoReloadOnWindowActivated,
+				"Options > General: auto-reload, on window activated by default");
+		}
+
+		// "Only on window activated"
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			check(asked.isEmpty() && view->diffCount() == 0, "opening asks nothing");
+			write(b, "one\n2\nthree\nfour\n");
+			window.applicationActivated();
+			settle();
+			check(asked == QStringList{ reloadQuestion(b) }
+				&& view->realLinesForTest(1).size() == 4 && view->diffCount() > 0
+				&& !view->isModified(), "window activated: asked, and reloaded on Yes");
+			asked.clear();
+			window.applicationActivated();
+			settle();
+			check(asked.isEmpty(), "nothing left to ask after the reload");
+
+			// No keeps the comparison and asks again at the next trigger
+			answerYes = false;
+			write(b, "one\n2\n");
+			window.applicationActivated();
+			settle();
+			window.applicationActivated();
+			settle();
+			check(asked.size() >= 2 && view->realLinesForTest(1).size() == 4,
+				"No: nothing reloaded, asked again the next time");
+			answerYes = true;
+
+			// a file that went away is no change to ask about
+			QFile::remove(b);
+			asked.clear();
+			window.applicationActivated();
+			settle();
+			check(asked.isEmpty(), "a removed file asks nothing");
+			write(b, "one\ntwo\nthree\n");
+		}
+
+		// "Disabled" only silences the application coming to the front: a
+		// tab becoming current and Recompare still check (OnMDIActivate,
+		// Rescan)
+		setMode(OptionsDialog::AutoReloadDisabled);
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			window.openFileComparison({ b, a });
+			settle();
+			auto *tabs = window.findChild<QTabWidget *>();
+			auto *view = qobject_cast<FileCompareView *>(tabs->widget(0));
+			if (view == nullptr)
+				return 2;
+			asked.clear();
+			answerYes = false;
+			write(a, "one\ntwo\n");
+			tabs->setCurrentIndex(1);
+			settle();
+			asked.clear(); // the second tab compares the same files
+			window.applicationActivated();
+			settle();
+			const bool silent = asked.isEmpty();
+			tabs->setCurrentIndex(0);
+			settle();
+			const bool onTab = asked == QStringList{ reloadQuestion(a) };
+			asked.clear();
+			view->refreshByUser();
+			settle();
+			check(silent && onTab && asked == QStringList{ reloadQuestion(a) },
+				"disabled: silent on activation, asks on tab switch and Recompare");
+			answerYes = true;
+			write(a, "one\ntwo\nthree\n");
+		}
+
+		// "Immediately": the files are watched
+		setMode(OptionsDialog::AutoReloadImmediately);
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			auto *tabs = window.findChild<QTabWidget *>();
+			if (view == nullptr)
+				return 2;
+			const QStringList watched = window.watchedPathsForTest();
+			check(watched.contains(a) && watched.contains(b)
+				&& watched.contains(dir.path()), "immediately: files and folder watched");
+			const auto waitForQuestion = [&asked]()
+			{
+				QElapsedTimer timer;
+				timer.start();
+				while (asked.isEmpty() && timer.elapsed() < 15000)
+					QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+			};
+			asked.clear();
+			write(b, "one\ntwo\nthree\nwatched\n");
+			waitForQuestion();
+			settle();
+			check(asked == QStringList{ reloadQuestion(b) }
+				&& view->realLinesForTest(1).size() == 4, "immediately: a change asks by itself");
+
+			// An editor atomically replaces the existing file. The Windows
+			// CRT's rename refuses an existing destination, so use QSaveFile
+			// with no direct-write fallback and verify the fixture committed.
+			asked.clear();
+			QSaveFile replacement(b);
+			replacement.setDirectWriteFallback(false);
+			const QByteArray replacementBytes("replaced\n");
+			const bool replaced = replacement.open(QIODevice::WriteOnly)
+				&& replacement.write(replacementBytes) == replacementBytes.size()
+				&& replacement.commit();
+			if (!replaced)
+				fprintf(stderr, "Atomic replacement fixture failed: %s\n",
+					qPrintable(replacement.errorString()));
+			check(replaced && read(b) == replacementBytes,
+				"immediately: the atomic replacement fixture commits");
+			if (replaced)
+				waitForQuestion();
+			settle();
+			check(replaced && asked == QStringList{ reloadQuestion(b) }
+				&& view->realLinesForTest(1) == QStringList{ QStringLiteral("replaced") }
+				&& window.watchedPathsForTest().contains(b),
+				"immediately: a replaced file asks too, and stays watched");
+
+			// The replacement's new file must remain observable after its
+			// first reload; watching the path in name alone is insufficient.
+			asked.clear();
+			write(b, "edited after replacement\n");
+			waitForQuestion();
+			settle();
+			check(asked == QStringList{ reloadQuestion(b) }
+				&& view->realLinesForTest(1)
+					== QStringList{ QStringLiteral("edited after replacement") }
+				&& window.watchedPathsForTest().contains(b),
+				"immediately: another edit after replacement is observed");
+
+			// a neighbor in the same folder is none of the comparison's
+			// business, even while a declined change is still pending
+			answerYes = false;
+			asked.clear();
+			write(b, "declined\n");
+			waitForQuestion();
+			settle();
+			const bool declined = asked.size() == 1;
+			asked.clear();
+			write(dir.filePath(QStringLiteral("neighbor.txt")), "noise\n");
+			QElapsedTimer quiet;
+			quiet.start();
+			while (quiet.elapsed() < 2000)
+				QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+			check(declined && asked.isEmpty(),
+				"immediately: a neighbor in the folder asks nothing");
+			answerYes = true;
+
+			emit tabs->tabCloseRequested(0);
+			settle();
+			check(tabs->count() == 0 && window.watchedPathsForTest().isEmpty(),
+				"closing the comparison drops its watches");
+			write(b, "one\ntwo\nthree\n");
+		}
+		setMode(OptionsDialog::AutoReloadOnWindowActivated);
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			settle();
+			check(window.watchedPathsForTest().isEmpty(), "the other modes watch nothing");
+		}
+
+		// unsaved changes are offered for saving before a reload
+		// (PromptAndSaveIfNeeded)
+		write(b, "one\n2\nthree\n");
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			view->typeAtForTest(0, 0, QStringLiteral("edited "));
+			write(b, "one\n2\nthree\nfour\n");
+			asked.clear();
+			savePrompts = 0;
+			saveChoice = 0;
+			window.applicationActivated();
+			settle();
+			check(asked.size() == 1 && savePrompts == 1 && view->isModified()
+				&& view->realLinesForTest(1).size() == 3,
+				"unsaved changes: Cancel reloads nothing");
+			saveChoice = 1;
+			window.applicationActivated();
+			settle();
+			check(savePrompts == 2 && !view->isModified()
+				&& read(a).startsWith("edited one")
+				&& view->realLinesForTest(0).value(0) == QStringLiteral("edited one")
+				&& view->realLinesForTest(1).size() == 4,
+				"unsaved changes: Save writes them, then reloads");
+			view->typeAtForTest(0, 0, QStringLiteral("dropped "));
+			write(b, "one\n2\n");
+			saveChoice = 2;
+			window.applicationActivated();
+			settle();
+			check(!view->isModified()
+				&& view->realLinesForTest(0).value(0) == QStringLiteral("edited one")
+				&& view->realLinesForTest(1).size() == 2,
+				"unsaved changes: Discard drops them and reloads");
+			write(a, "one\ntwo\nthree\n");
+		}
+
+		// DoSave: writing over a file changed elsewhere asks first
+		write(b, "one\n2\nthree\n");
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			view->typeAtForTest(1, 0, QStringLiteral("mine "));
+			write(b, "theirs\n");
+			asked.clear();
+			answerYes = false;
+			QString error;
+			const bool carriedOn = view->saveModified(&error);
+			check(carriedOn && asked == QStringList{ overwriteQuestion(b) }
+				&& read(b) == "theirs\n" && view->isModified(),
+				"saving over a changed file: No leaves the file and the edits");
+			answerYes = true;
+			view->saveModified(&error);
+			check(asked.size() == 2 && read(b).startsWith("mine one") && !view->isModified(),
+				"saving over a changed file: Yes overwrites");
+			asked.clear();
+			view->typeAtForTest(1, 0, QStringLiteral("again "));
+			view->saveModified(&error);
+			settle();
+			check(asked.isEmpty() && read(b).startsWith("again mine one"),
+				"the next save asks nothing");
+		}
+
+		// "Don't ask this question again" keeps the answer
+		write(b, "one\ntwo\nthree\n");
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			const QString key = QStringLiteral("FileChangedRescan");
+			asked.clear();
+			dontAskAgain = true;
+			write(b, "one\n");
+			window.applicationActivated();
+			settle();
+			dontAskAgain = false;
+			const bool kept = lm::rememberedAnswer(key) == lm::AnswerYes;
+			write(b, "one\ntwo\n");
+			window.applicationActivated();
+			settle();
+			check(kept && asked.size() == 1 && view->realLinesForTest(1).size() == 2,
+				"don't ask again: Yes reloads silently from then on");
+
+			// Options > Message Boxes lists the question with its answer,
+			// which the drop-down turns into No
+			OptionsDialog dialog;
+			const auto rows = dialog.messageBoxesForTest();
+			int row = 0; // the question's, in upstream's order
+			const QList<lm::HideableMessage> listed = lm::hideableMessages();
+			while (row < listed.size() && listed.at(row).key != key)
+				++row;
+			int information = 0; // an information box's: the identical files'
+			while (information < listed.size()
+				&& listed.at(information).key != QStringLiteral("FilesSame"))
+				++information;
+			bool fine = rows.size() == listed.size() && row < rows.size() && rows.at(row).second
+				&& dialog.messageBoxAnswerForTest(row) == lm::answerText(lm::AnswerYes)
+				&& dialog.messageBoxAnswerForTest(information).isEmpty();
+			dialog.setMessageBoxAnswerForTest(row, 1);
+			dialog.setMessageBoxHiddenForTest(information, true);
+			fine = fine && dialog.messageBoxAnswerForTest(information) == lm::answerText(lm::AnswerOk);
+			dialog.setMessageBoxHiddenForTest(information, false);
+			dialog.saveForTest();
+			fine = fine && lm::rememberedAnswer(key) == lm::AnswerNo;
+			write(b, "one\ntwo\nthree\nfour\n");
+			window.applicationActivated();
+			settle();
+			check(fine && asked.size() == 1 && view->realLinesForTest(1).size() == 2,
+				"Message Boxes: the kept answer, switched to No");
+			dialog.resetMessageBoxesForTest();
+			window.applicationActivated();
+			settle();
+			check(lm::rememberedAnswer(key) == lm::NoAnswer && asked.size() == 2
+				&& dialog.messageBoxAnswerForTest(row).isEmpty()
+				&& view->realLinesForTest(1).size() == 4, "Reset asks again");
+		}
+
+		// File > Reload (OnFileReload)
+		write(a, "l1\nl2\nl3\nl4\nl5\nl6\n");
+		write(b, "l1\nl2\nl3\nl4\nl5\nL6\n");
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b }, { true, false });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			view->typeAtForTest(1, 0, QStringLiteral("typed "));
+			view->setCursorViewLineForTest(1, 4);
+			write(b, "l1\nl2\nl3\nl4\nl5\nL6\nl7\n");
+			asked.clear();
+			savePrompts = 0;
+			saveChoice = 2;
+			window.reloadCurrentComparison();
+			settle();
+			check(asked.isEmpty() && savePrompts == 1 && !view->isModified()
+				&& view->realLinesForTest(1).size() == 7
+				&& view->realLinesForTest(1).value(0) == QStringLiteral("l1")
+				&& view->cursorViewLineForTest(1) == 4 && view->isSideReadOnly(0)
+				&& !view->isSideReadOnly(1),
+				"Reload: save prompt, fresh content, same line, read-only kept");
+			view->undoActive();
+			check(view->realLinesForTest(1).size() == 7 && !view->isModified(),
+				"nothing to undo after a reload");
+
+			// a file that cannot be read: nothing is touched
+			QFile::remove(b);
+			QString error;
+			const bool reloaded = view->reload(&error);
+			check(!reloaded && error.contains(b) && view->realLinesForTest(1).size() == 7,
+				"a missing file refuses the reload and keeps the panes");
+			write(b, "one\ntwo\nthree\n");
+		}
+		{
+			MainWindow window;
+			window.openBlankComparison();
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			view->typeAtForTest(0, 0, QStringLiteral("scratch"));
+			saveChoice = 2;
+			window.reloadCurrentComparison();
+			settle();
+			check(!view->isModified()
+				&& view->realLinesForTest(0) == QStringList{ QString() },
+				"Reload empties an untitled pane");
+		}
+
+		// like opening, a reload reports identical files; Recompare's check
+		// leaves the report to the Recompare
+		write(a, "same\n");
+		write(b, "other\n");
+		{
+			const QString binaryMatch = QCoreApplication::translate("MessageBoxes",
+				"Selected files are identical (binary match).");
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			shown.clear();
+			asked.clear();
+			write(b, "same\n");
+			window.applicationActivated();
+			settle();
+			settle();
+			check(asked.size() == 1 && shown == QStringList{ binaryMatch },
+				"a reload that leaves the files identical says so");
+			write(b, "other again\n");
+			window.applicationActivated();
+			settle();
+			shown.clear();
+			write(b, "same\n");
+			view->refreshByUser();
+			settle();
+			settle();
+			check(shown == QStringList{ binaryMatch } && view->diffCount() == 0,
+				"Recompare: reloaded on Yes, one report");
+		}
+
+		// tables: the same checks, and the save prompt on closing
+		const QString t1 = dir.filePath(QStringLiteral("t1.csv"));
+		const QString t2 = dir.filePath(QStringLiteral("t2.csv"));
+		write(t1, "k,v\n1,a\n2,b\n");
+		write(t2, "k,v\n1,a\n2,b\n");
+		{
+			MainWindow window;
+			window.openFileComparison({ t1, t2 });
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			auto *tabs = window.findChild<QTabWidget *>();
+			if (table == nullptr)
+				return 2;
+			asked.clear();
+			write(t2, "k,v\n1,a\n2,c\n3,d\n");
+			window.applicationActivated();
+			settle();
+			check(asked == QStringList{ reloadQuestion(t2) } && table->diffCount() > 0,
+				"table: asked and reloaded");
+			asked.clear();
+			answerYes = false;
+			write(t2, "k,v\n1,a\n");
+			table->refreshByUser();
+			settle();
+			const bool recompareAsks = asked == QStringList{ reloadQuestion(t2) };
+			// the right side now holds what the file no longer has
+			table->gotoFirstDiff();
+			table->copyCurrentDiff(0);
+			asked.clear();
+			QString error;
+			table->saveModified(&error);
+			check(recompareAsks && asked == QStringList{ overwriteQuestion(t2) }
+				&& read(t2) == "k,v\n1,a\n" && table->isModified(),
+				"table: Recompare checks, saving over a changed file asks");
+			savePrompts = 0;
+			saveChoice = 0;
+			emit tabs->tabCloseRequested(0);
+			settle();
+			const bool keptOpen = tabs->count() == 1 && savePrompts == 1;
+			saveChoice = 2;
+			window.reloadCurrentComparison();
+			settle();
+			check(keptOpen && savePrompts == 2 && !table->isModified()
+				&& table->paths() == QStringList({ t1, t2 }),
+				"table: closing and reloading offer to save first");
+			answerYes = true;
+		}
+
+		// images: checked on activation, not by Recompare (OnRefresh)
+		const QString p1 = dir.filePath(QStringLiteral("l.png"));
+		const QString p2 = dir.filePath(QStringLiteral("r.png"));
+		const QString p3 = dir.filePath(QStringLiteral("m.png"));
+		QImage picture(8, 8, QImage::Format_RGB32);
+		picture.fill(Qt::blue);
+		picture.save(p1);
+		picture.save(p2);
+		picture.save(p3);
+		const auto repaint = [&](const QString &path, Qt::GlobalColor color)
+		{
+			const QDateTime before = QFileInfo(path).lastModified();
+			picture.fill(color);
+			picture.save(path);
+			QFile f(path);
+			if (!f.open(QIODevice::Append))
+				std::exit(2);
+			f.setFileTime(before.addSecs(3), QFileDevice::FileModificationTime);
+		};
+		{
+			MainWindow window;
+			window.openFileComparison({ p1, p2 });
+			settle();
+			auto *image = window.findChild<ImageCompareView *>();
+			if (image == nullptr)
+				return 2;
+			const bool identical = image->diffCount() == 0;
+			repaint(p2, Qt::red);
+			asked.clear();
+			image->refreshByUser();
+			settle();
+			const bool refreshSilent = asked.isEmpty() && image->diffCount() == 0;
+			window.applicationActivated();
+			settle();
+			check(identical && refreshSilent && asked == QStringList{ reloadQuestion(p2) }
+				&& image->diffCount() > 0, "image: Recompare keeps the loaded images, activation reloads");
+			lm::setQuestionSinkForTest([](const QString &, bool *) { return true; });
+			image->copyAllToRight(); // after "Copy all differences to other file?"
+			lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+			savePrompts = 0;
+			saveChoice = 2;
+			window.reloadCurrentComparison();
+			settle();
+			check(savePrompts == 1 && !image->isModified() && image->diffCount() > 0,
+				"image: Reload offers to save, then reads the files again");
+		}
+		{
+			// Recompare used to reopen the first two files only
+			MainWindow window;
+			window.openFileComparison({ p1, p3, p2 });
+			settle();
+			auto *image = window.findChild<ImageCompareView *>();
+			if (image == nullptr)
+				return 2;
+			image->refreshByUser();
+			window.reloadCurrentComparison();
+			settle();
+			check(image->paneCount() == 3 && image->paths().size() == 3
+				&& image->diffCount() > 0, "image: three panes stay three");
+		}
+
+		MainWindow::setSavePromptForTest({});
+		lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+		lm::setMessageSinkForTest([](const QString &) {});
+		printf("reload: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestIdenticalOpt))
+	{
+		// WinMerge's ShowIdenticalMessage, DoSelfCompare and Message
+		// Boxes page; the messages are collected instead of shown
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		QStringList shown;
+		lm::setMessageSinkForTest([&shown](const QString &text) { shown.append(text); });
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto message = [](const char *text) {
+			return QCoreApplication::translate("MessageBoxes", text);
+		};
+		const QString binaryMatch = message("Selected files are identical (binary match).");
+		const QString binaryDiffer = message("Selected files are identical (with current settings).\n"
+			"But differ at the binary level.");
+		const QString sameFile = message("Same file is opened in both panes.");
+		const QString filesSame = message("Selected files are identical.");
+		const QString a = dir.filePath(QStringLiteral("a.txt"));
+		const QString b = dir.filePath(QStringLiteral("b.txt"));
+		const QString spaced = dir.filePath(QStringLiteral("spaced.txt"));
+		const QString other = dir.filePath(QStringLiteral("other.txt"));
+		write(a, "one two\n");
+		write(b, "one two\n");
+		write(spaced, "one   two\n");
+		write(other, "something else\n");
+		lm::setCompareOptionsForTest(0);
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 3; ++i)
+				QCoreApplication::processEvents();
+		};
+		const auto opened = [&](const QStringList &paths) {
+			shown.clear();
+			MainWindow window;
+			window.openFileComparison(paths);
+			settle();
+			return shown;
+		};
+
+		check(opened({ a, b }) == QStringList{ binaryMatch },
+			"identical files: binary match on opening");
+		check(opened({ a, other }).isEmpty(), "different files: no message");
+		check(opened({ a, a }) == QStringList{ sameFile },
+			"same file in both panes");
+		lm::setCompareOptionsForTest(2); // ignore all whitespace
+		check(opened({ a, spaced }) == QStringList{ binaryDiffer },
+			"identical with the options, not in bytes");
+		lm::setCompareOptionsForTest(0);
+		{
+			shown.clear();
+			MainWindow window;
+			window.openBlankComparison();
+			settle();
+			check(shown.isEmpty(), "File > New: no message");
+		}
+		{
+			MainWindow window;
+			window.openFileComparison({ a, b });
+			settle();
+			shown.clear();
+			window.findChild<FileCompareView *>()->refreshByUser();
+			settle();
+			check(shown == QStringList{ binaryMatch }, "Recompare reports again");
+		}
+		{
+			// a copy that leaves nothing different reports it, as its
+			// FlushAndRescan does, and saving then reports it too
+			write(other, "one two!\n");
+			MainWindow window;
+			window.openFileComparison({ a, other });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			shown.clear();
+			view->copyCurrentDiff(0, 1, false);
+			settle();
+			check(shown == QStringList{ filesSame }, "a copy to identical reports it");
+			shown.clear();
+			QString error;
+			view->saveModified(&error);
+			settle();
+			check(shown == QStringList{ binaryMatch }, "saving to identical reports it");
+			write(other, "something else\n");
+		}
+		{
+			// a copy that leaves a difference says nothing; a copy of
+			// what a selection takes in, and Copy All, report as well
+			const QString left = dir.filePath(QStringLiteral("two_l.txt"));
+			const QString right = dir.filePath(QStringLiteral("two_r.txt"));
+			write(left, "x1\nsame\nx2\n");
+			write(right, "y1\nsame\ny2\n");
+			MainWindow window;
+			window.openFileComparison({ left, right });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			shown.clear();
+			view->copyCurrentDiff(0, 1, false);
+			settle();
+			check(shown.isEmpty(), "a copy that leaves a difference: no message");
+			view->selectForTest(0, 0, 0, 2, 2);
+			view->copyToRight();
+			settle();
+			check(shown == QStringList{ filesSame } && view->diffCount() == 0,
+				"a copy of a selection to identical reports it");
+			view->undoActive();
+			view->undoActive();
+			settle();
+			shown.clear();
+			view->copyAllFrom(0, 1);
+			settle();
+			check(shown == QStringList{ filesSame }, "Copy All to identical reports it");
+		}
+		{
+			// undoing and redoing rescan and report too
+			const QString twin = dir.filePath(QStringLiteral("twin.txt"));
+			write(twin, "one two\n");
+			MainWindow window;
+			window.openFileComparison({ a, twin });
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			view->typeAtForTest(0, 0, QStringLiteral("x"));
+			shown.clear();
+			view->undoActive();
+			settle();
+			check(shown == QStringList{ binaryMatch }, "undoing to identical reports it");
+			shown.clear();
+			view->redoActive();
+			settle();
+			check(shown.isEmpty() && view->diffCount() == 1, "redoing to different: no message");
+			view->undoActive();
+			settle();
+			// a line more: only counted, as realigning would clear Redo
+			view->typeAtForTest(0, 0, QStringLiteral("extra\n"));
+			shown.clear();
+			view->undoActive();
+			settle();
+			const bool reported = shown == QStringList{ binaryMatch };
+			shown.clear();
+			view->redoActive();
+			settle();
+			check(reported && shown.isEmpty()
+				&& view->realLinesForTest(0) == QStringList({ QStringLiteral("extra"), QStringLiteral("one two") }),
+				"with a line more: reported, and Redo is still there");
+		}
+		{
+			// a table's copy as well
+			const QString left = dir.filePath(QStringLiteral("l.csv"));
+			const QString right = dir.filePath(QStringLiteral("r.csv"));
+			write(left, "k,v\n1,a\n");
+			write(right, "k,v\n1,b\n");
+			MainWindow window;
+			window.openFileComparison({ left, right });
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			shown.clear();
+			if (table != nullptr)
+			{
+				table->copyAllFrom(0, 1);
+				settle();
+			}
+			check(table != nullptr && shown == QStringList{ filesSame },
+				"a table's copy to identical reports it");
+			if (table != nullptr)
+			{
+				shown.clear();
+				table->undo();
+				settle();
+				const bool undone = shown.isEmpty() && table->diffCount() == 1;
+				table->redo();
+				settle();
+				check(undone && shown == QStringList{ filesSame },
+					"a table's undo and redo rescan and report too");
+			}
+		}
+		{
+			const QString leftPng = dir.filePath(QStringLiteral("l.png"));
+			const QString rightPng = dir.filePath(QStringLiteral("r.png"));
+			QImage image(4, 4, QImage::Format_RGB32);
+			image.fill(Qt::blue);
+			image.save(leftPng);
+			image.save(rightPng);
+			check(opened({ leftPng, rightPng }) == QStringList{ binaryMatch },
+				"identical images: binary match");
+		}
+		lm::setMessageHidden(QStringLiteral("FilesSame"), true);
+		check(opened({ a, b }).isEmpty(), "hidden: no message");
+		lm::resetHiddenMessages();
+
+		// self-compare: a snapshot on the left, read-only, "Original File"
+		{
+			shown.clear();
+			MainWindow window;
+			window.openSelfComparison(a);
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			const QStringList paths = view != nullptr ? view->paths() : QStringList{};
+			const QStringList recent = QSettings()
+				.value(QStringLiteral("RecentComparisons/List")).toStringList();
+			check(view != nullptr && paths.size() == 2 && paths.at(1) == a
+				&& paths.at(0) != a && QFile::exists(paths.at(0))
+				&& view->isSideReadOnly(0) && !view->isSideReadOnly(1)
+				&& view->sideCaption(0) == MainWindow::tr("Original File")
+				&& view->tabTitle().startsWith(MainWindow::tr("Original File"))
+				&& recent.value(0) == a && shown == QStringList{ binaryMatch },
+				"self-compare of a text file");
+		}
+		{
+			const QString csv = dir.filePath(QStringLiteral("t.csv"));
+			write(csv, "k,v\n1,a\n");
+			MainWindow window;
+			window.openSelfComparison(csv);
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			check(table != nullptr && table->tabTitle().startsWith(
+				MainWindow::tr("Original File")), "self-compare of a table");
+		}
+		{
+			// Compare with the first path alone; the selection stays
+			MainWindow window;
+			window.openSelector({ b });
+			auto *selector = window.findChild<NewComparisonView *>();
+			auto *pathEdit = selector != nullptr ? selector->findChild<QLineEdit *>() : nullptr;
+			if (pathEdit == nullptr)
+				return 2;
+			QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(pathEdit, &press);
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			check(view != nullptr && view->paths().value(1) == b
+				&& window.findChild<NewComparisonView *>() != nullptr,
+				"Compare with one file self-compares");
+		}
+
+		// Options > Message Boxes
+		{
+			OptionsDialog dialog;
+			const auto rows = dialog.messageBoxesForTest();
+			int same = 0; // the identical files' row
+			while (same < lm::hideableMessages().size()
+				&& lm::hideableMessages().at(same).key != QStringLiteral("FilesSame"))
+				++same;
+			dialog.setMessageBoxHiddenForTest(same, true);
+			dialog.saveForTest();
+			const bool saved = lm::messageHidden(QStringLiteral("FilesSame"));
+			shown.clear();
+			dialog.resetMessageBoxesForTest();
+			// WinMerge's order: the folder window's question about a folder
+			// on one side (IDS_CREATE_PAIR_FOLDER), the four answers kept
+			// since 0.9.x, the question about files whose lines end
+			// otherwise (IDS_SUGGEST_IGNOREEOL) and the one before Copy All
+			// (IDS_CONFIRM_COPY_ALL_DIFFS)
+			check(rows.size() == lm::hideableMessages().size() && rows.size() == 7
+				&& same == 1 && !rows.at(same).second && saved
+				&& !lm::messageHidden(QStringLiteral("FilesSame"))
+				&& !dialog.messageBoxesForTest().at(same).second,
+				"Message Boxes page: hide, save and reset");
+		}
+		lm::setMessageSinkForTest([](const QString &) {});
+		printf("identical: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestCompareOptionsOpt))
+	{
+		// WinMerge's Options > Compare > General: the page as PropCompare
+		// lays it out, and what the options do to a file, a table and a
+		// folder comparison. The messages are collected instead of shown
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		QStringList shown;
+		lm::setMessageSinkForTest([&shown](const QString &text) { shown.append(text); });
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 3; ++i)
+				QCoreApplication::processEvents();
+		};
+		const auto utf16 = [](const QString &text)
+		{
+			QByteArray bytes("\xFF\xFE", 2); // little endian, with its BOM
+			for (const QChar c : text)
+			{
+				bytes.append(static_cast<char>(c.unicode() & 0xFF));
+				bytes.append(static_cast<char>(c.unicode() >> 8));
+			}
+			return bytes;
+		};
+		const auto message = [](const char *text) {
+			return QCoreApplication::translate("MessageBoxes", text);
+		};
+		const QString binaryMatch = message("Selected files are identical (binary match).");
+		const QString binaryDiffer = message("Selected files are identical (with current settings).\n"
+			"But differ at the binary level.");
+
+		// --- the page ---
+		{
+			OptionsDialog dialog;
+			dialog.selectCategoryForTest(2); // Compare > General
+			dialog.grab(); // lays the page out
+			QWidget *page = dialog.pageForTest(OptionsDialog::ComparePage);
+			const auto top = [page](const QWidget *widget) {
+				return widget->mapTo(page, QPoint(0, 0)).y();
+			};
+			// PropCompare's controls, top to bottom, with its texts
+			const struct { const char *name; const char *text; } rows[] = {
+				{ "ignoreBlankLines", QT_TRANSLATE_NOOP("OptionsDialog", "Ignore blank lines") },
+				{ "ignoreCase", QT_TRANSLATE_NOOP("OptionsDialog", "Ignore case") },
+				{ "ignoreEol", QT_TRANSLATE_NOOP("OptionsDialog",
+					"Ignore EOL differences (Windows/Unix/Mac)") },
+				{ "ignoreNumbers", QT_TRANSLATE_NOOP("OptionsDialog", "Ignore numbers") },
+				{ "ignoreCodepage", QT_TRANSLATE_NOOP("OptionsDialog",
+					"Ignore codepage differences") },
+				{ "filterComments", QT_TRANSLATE_NOOP("OptionsDialog",
+					"Ignore comment differences") },
+				{ "ignoreMissingTrailingEol", QT_TRANSLATE_NOOP("OptionsDialog",
+					"Ignore missing trailing EOL") },
+				{ "ignoreLineBreaks", QT_TRANSLATE_NOOP("OptionsDialog",
+					"Ignore line breaks (treat as spaces)") },
+				{ "movedBlocks", QT_TRANSLATE_NOOP("OptionsDialog",
+					"Enable moved block detection") },
+				{ "diffAlgorithm", nullptr },
+				{ "indentHeuristic", QT_TRANSLATE_NOOP("OptionsDialog",
+					"Enable indent heuristic") },
+				{ "blankOutIgnored", QT_TRANSLATE_NOOP("OptionsDialog",
+					"Completely unhighlight the ignored differences") },
+			};
+			const QList<QRadioButton *> radios = page->findChildren<QRadioButton *>();
+			bool layout = radios.size() == 3
+				&& radios.at(0)->text() == OptionsDialog::tr("Compare")
+				&& radios.at(1)->text() == OptionsDialog::tr("Ignore change")
+				&& radios.at(2)->text() == OptionsDialog::tr("Ignore all")
+				&& top(radios.at(0)) < top(radios.at(1))
+				&& top(radios.at(1)) < top(radios.at(2));
+			int above = layout ? top(radios.at(2)) : -1;
+			for (const auto &row : rows)
+			{
+				auto *widget = page->findChild<QWidget *>(QLatin1String(row.name));
+				auto *box = qobject_cast<QCheckBox *>(widget);
+				const bool fits = widget != nullptr && top(widget) > above
+					&& (row.text == nullptr
+						|| (box != nullptr && box->text() == OptionsDialog::tr(row.text)));
+				if (!fits)
+					printf("  out of place: %s\n", row.name);
+				layout = layout && fits;
+				if (widget != nullptr)
+					above = top(widget);
+			}
+			layout = layout && page->findChildren<QCheckBox *>().size() == 11;
+			check(layout, "page: WinMerge's controls, order and texts");
+
+			const auto box = [page](const char *name) {
+				return page->findChild<QCheckBox *>(QLatin1String(name));
+			};
+			auto *algorithm = page->findChild<QComboBox *>(QStringLiteral("diffAlgorithm"));
+			QCheckBox *heuristic = box("indentHeuristic");
+			if (!layout || algorithm == nullptr || heuristic == nullptr)
+				return 1;
+			const QStringList algorithms = { OptionsDialog::tr("default"),
+				OptionsDialog::tr("minimal"), OptionsDialog::tr("patience"),
+				OptionsDialog::tr("histogram"), OptionsDialog::tr("none") };
+			QStringList offered;
+			for (int i = 0; i < algorithm->count(); ++i)
+				offered.append(algorithm->itemText(i));
+			check(offered == algorithms, "page: the five diff algorithms");
+
+			// WinMerge's defaults: all off but the indent heuristic
+			const auto atDefaults = [&]() {
+				bool defaults = radios.at(0)->isChecked() && algorithm->currentIndex() == 0;
+				for (QCheckBox *each : page->findChildren<QCheckBox *>())
+					defaults = defaults && each->isChecked() == (each == heuristic);
+				return defaults;
+			};
+			check(atDefaults(), "page: defaults");
+
+			// only the xdiff algorithms take the indent heuristic
+			bool rule = true;
+			for (int i = 0; i < algorithm->count(); ++i)
+			{
+				algorithm->setCurrentIndex(i);
+				rule = rule && heuristic->isEnabled() == (i != 0 && i != 4);
+			}
+			check(rule, "page: indent heuristic follows the algorithm");
+
+			const char *const added[] = { "ignoreCodepage", "filterComments",
+				"ignoreMissingTrailingEol", "ignoreLineBreaks", "blankOutIgnored" };
+			for (const char *name : added)
+				box(name)->setChecked(true);
+			heuristic->setChecked(false);
+			algorithm->setCurrentIndex(3); // histogram
+			dialog.saveForTest();
+			const DIFFOPTIONS saved = lm::currentDiffOptions();
+			const QSettings settings;
+			check(saved.bFilterCommentsLines && saved.bIgnoreMissingTrailingEol
+				&& saved.bIgnoreLineBreaks && saved.bCompletelyBlankOutIgnoredChanges
+				&& !saved.bIndentHeuristic && saved.nDiffAlgorithm == 3
+				&& lm::ignoreCodepageDifferences()
+				&& settings.value(QStringLiteral("Settings/IgnoreCodepage")).toBool()
+				&& settings.value(QStringLiteral("Settings/FilterCommentsLines")).toBool()
+				&& settings.value(QStringLiteral("Settings/IgnoreMissingTrailingEol")).toBool()
+				&& settings.value(QStringLiteral("Settings/IgnoreLineBreaks")).toBool()
+				&& settings.value(QStringLiteral(
+					"Settings/CompletelyBlankOutIgnoredChanges")).toBool()
+				&& !settings.value(QStringLiteral("Settings/IndentHeuristic")).toBool(),
+				"page: saved to the options");
+
+			// another dialog shows what was saved; Defaults puts it back
+			OptionsDialog again;
+			QWidget *pageAgain = again.pageForTest(OptionsDialog::ComparePage);
+			bool loaded = !pageAgain->findChild<QCheckBox *>(
+				QStringLiteral("indentHeuristic"))->isChecked()
+				&& pageAgain->findChild<QComboBox *>(
+					QStringLiteral("diffAlgorithm"))->currentIndex() == 3;
+			for (const char *name : added)
+				loaded = loaded
+					&& pageAgain->findChild<QCheckBox *>(QLatin1String(name))->isChecked();
+			check(loaded, "page: saved options shown again");
+			dialog.restoreDefaultsForTest();
+			check(atDefaults(), "page: Defaults");
+			dialog.saveForTest();
+			const DIFFOPTIONS reset = lm::currentDiffOptions();
+			check(!reset.bFilterCommentsLines && !reset.bIgnoreMissingTrailingEol
+				&& !reset.bIgnoreLineBreaks && !reset.bCompletelyBlankOutIgnoredChanges
+				&& reset.bIndentHeuristic && reset.nDiffAlgorithm == 0
+				&& !lm::ignoreCodepageDifferences(), "page: Defaults saved");
+		}
+
+		// --- file comparisons ---
+		const QString leftC = dir.filePath(QStringLiteral("left.c"));
+		const QString rightC = dir.filePath(QStringLiteral("right.c"));
+		const QByteArray leftCode = "int total; // the sum\nint count;\n";
+		const QByteArray rightCode = "int total; // sum of everything\nint count;\n";
+		write(leftC, leftCode);
+		write(rightC, rightCode);
+		// the same two texts where no language tells what a comment is
+		const QString leftPlain = dir.filePath(QStringLiteral("left.txt"));
+		const QString rightPlain = dir.filePath(QStringLiteral("right.txt"));
+		write(leftPlain, leftCode);
+		write(rightPlain, rightCode);
+		// YAML, whose comments Tree-sitter's grammar tells (no built-in parser)
+		const QString leftYaml = dir.filePath(QStringLiteral("left.yaml"));
+		const QString rightYaml = dir.filePath(QStringLiteral("right.yaml"));
+		write(leftYaml, "total: 1 # the sum\ncount: 2\n");
+		write(rightYaml, "total: 1 # sum of everything\ncount: 2\n");
+		// a line break moved inside the same words; then with another
+		// number of lines; then with a real change next to it
+		const QString leftWrap = dir.filePath(QStringLiteral("wrap-left.txt"));
+		const QString rightWrap = dir.filePath(QStringLiteral("wrap-right.txt"));
+		const QByteArray leftWrapped = "alpha\none two\nthree\nomega\n";
+		const QByteArray rightWrapped = "alpha\none\ntwo three\nomega\n";
+		write(leftWrap, leftWrapped);
+		write(rightWrap, rightWrapped);
+		const QString leftTall = dir.filePath(QStringLiteral("tall-left.txt"));
+		const QString rightTall = dir.filePath(QStringLiteral("tall-right.txt"));
+		write(leftTall, "alpha\none two three\nomega\n");
+		write(rightTall, "alpha\none\ntwo\nthree\nomega\n");
+		const QString leftEdit = dir.filePath(QStringLiteral("edit-left.txt"));
+		const QString rightEdit = dir.filePath(QStringLiteral("edit-right.txt"));
+		write(leftEdit, "alpha\none two\nthree LEFT\nomega\n");
+		write(rightEdit, "alpha\none\ntwo three RIGHT\nomega\n");
+		// one text in two encodings, and with and without a BOM
+		const QString text = QStringLiteral("héllo\nworld\n");
+		const QString utf8File = dir.filePath(QStringLiteral("utf8.txt"));
+		const QString utf8Copy = dir.filePath(QStringLiteral("utf8-copy.txt"));
+		const QString utf8Bom = dir.filePath(QStringLiteral("utf8-bom.txt"));
+		const QString utf16File = dir.filePath(QStringLiteral("utf16.txt"));
+		write(utf8File, text.toUtf8());
+		write(utf8Copy, text.toUtf8());
+		write(utf8Bom, QByteArray("\xEF\xBB\xBF") + text.toUtf8());
+		write(utf16File, utf16(text));
+
+		struct Counts
+		{
+			int diffs = -1;
+			int ignored = -1;
+			int wordSpans = -1;
+			QStringList messages;
+		};
+		const auto opened = [&](const QStringList &paths) {
+			shown.clear();
+			MainWindow window;
+			window.openFileComparison(paths);
+			settle();
+			Counts counts;
+			if (auto *view = window.findChild<FileCompareView *>())
+			{
+				counts.diffs = view->diffCount();
+				counts.ignored = view->ignoredDiffCount();
+				counts.wordSpans = view->wordSpanCountForTest(0);
+			}
+			counts.messages = shown;
+			return counts;
+		};
+		const auto is = [](const Counts &counts, int diffs, int ignored,
+			const QStringList &messages = {}) {
+			if (counts.diffs != diffs || counts.ignored != ignored
+				|| counts.messages != messages)
+				printf("  got %d difference(s), %d ignored, %d message(s)\n", counts.diffs,
+					counts.ignored, static_cast<int>(counts.messages.size()));
+			return counts.diffs == diffs && counts.ignored == ignored
+				&& counts.messages == messages;
+		};
+
+		lm::setCompareOptionsForTest(0);
+		check(is(opened({ leftC, rightC }), 1, 0), "comments: a difference by default");
+		lm::setCompareFlagForTest(OPT_CMP_FILTER_COMMENTLINES, true);
+		check(is(opened({ leftC, rightC }), 0, 1, { binaryDiffer }),
+			"comments: ignored, the files identical with the settings");
+		check(is(opened({ leftPlain, rightPlain }), 1, 0),
+			"comments: only where the language has them");
+		check(is(opened({ leftYaml, rightYaml }), 0, 1, { binaryDiffer }),
+			"comments: in YAML too, through Tree-sitter");
+		lm::setCompareFlagForTest(OPT_CMP_COMPLETELY_BLANK_OUT_IGNORED_CHANGES, true);
+		check(is(opened({ leftC, rightC }), 0, 0, { binaryDiffer }),
+			"comments: unhighlighted completely");
+
+		lm::setCompareOptionsForTest(0);
+		check(is(opened({ leftWrap, rightWrap }), 1, 0), "line breaks: a difference by default");
+		const Counts strictEdit = opened({ leftEdit, rightEdit });
+		lm::setCompareFlagForTest(OPT_CMP_IGNORE_LINE_BREAKS, true);
+		check(is(opened({ leftWrap, rightWrap }), 0, 1, { binaryDiffer }),
+			"line breaks: ignored when the words are the same");
+		check(is(opened({ leftTall, rightTall }), 0, 1, { binaryDiffer }),
+			"line breaks: ignored across another number of lines");
+		// inside a real difference the moved break is not highlighted
+		const Counts looseEdit = opened({ leftEdit, rightEdit });
+		printf("  word highlights on the left: %d strict, %d as spaces\n",
+			strictEdit.wordSpans, looseEdit.wordSpans);
+		check(is(strictEdit, 1, 0) && is(looseEdit, 1, 0)
+			&& looseEdit.wordSpans == 1 && strictEdit.wordSpans > 1,
+			"line breaks: a real change stays, its moved break unmarked");
+		lm::setCompareFlagForTest(OPT_CMP_COMPLETELY_BLANK_OUT_IGNORED_CHANGES, true);
+		check(is(opened({ leftWrap, rightWrap }), 0, 0, { binaryDiffer }),
+			"line breaks: unhighlighted completely");
+		check(is(opened({ leftTall, rightTall }), 0, 1, { binaryDiffer }),
+			"line breaks: the extra lines stay marked");
+
+		// the same text in another encoding: no difference to show, yet
+		// not identical unless the option says so
+		lm::setCompareOptionsForTest(0);
+		check(is(opened({ utf8File, utf8Copy }), 0, 0, { binaryMatch }),
+			"codepage: same encoding, identical");
+		check(is(opened({ utf8File, utf16File }), 0, 0),
+			"codepage: another encoding is not identical");
+		check(is(opened({ utf8File, utf8Bom }), 0, 0),
+			"codepage: a BOM alone counts too");
+		check(is(opened({ utf8File, utf8Copy, utf16File }), 0, 0),
+			"codepage: 3-way, one pane in another encoding");
+		lm::setCompareFlagForTest(OPT_CMP_IGNORE_CODEPAGE, true);
+		check(is(opened({ utf8File, utf16File }), 0, 0, { binaryDiffer }),
+			"codepage: ignored, identical with the settings");
+		check(is(opened({ utf8File, utf8Copy, utf16File }), 0, 0, { binaryDiffer }),
+			"codepage: ignored, 3-way");
+
+		// --- tables ---
+		const QString utf8Table = dir.filePath(QStringLiteral("utf8.csv"));
+		const QString utf16Table = dir.filePath(QStringLiteral("utf16.csv"));
+		const QString otherTable = dir.filePath(QStringLiteral("other.csv"));
+		const QString table = QStringLiteral("id,name\n1,café\n2,tea\n");
+		write(utf8Table, table.toUtf8());
+		write(utf16Table, utf16(table));
+		write(otherTable, "id,name\n1,coffee\n2,tea\n");
+		const auto openedTable = [&](const QString &left, const QString &right) {
+			shown.clear();
+			MainWindow window;
+			window.openTableComparison(left, right);
+			settle();
+			auto *view = window.findChild<TableCompareView *>();
+			return view != nullptr && view->diffCount() == 0 ? shown
+				: QStringList{ QStringLiteral("?") };
+		};
+		lm::setCompareOptionsForTest(0);
+		check(openedTable(utf8Table, utf16Table).isEmpty(),
+			"table: another encoding is not identical");
+		lm::setCompareFlagForTest(OPT_CMP_IGNORE_CODEPAGE, true);
+		check(openedTable(utf8Table, utf16Table) == QStringList{ binaryDiffer },
+			"table: codepage ignored, identical with the settings");
+
+		// --- folders ---
+		const QString leftDir = dir.filePath(QStringLiteral("L"));
+		const QString rightDir = dir.filePath(QStringLiteral("R"));
+		write(leftDir + QStringLiteral("/code.c"), leftCode);
+		write(rightDir + QStringLiteral("/code.c"), rightCode);
+		write(leftDir + QStringLiteral("/wrap.txt"), leftWrapped);
+		write(rightDir + QStringLiteral("/wrap.txt"), rightWrapped);
+		write(leftDir + QStringLiteral("/codepage.txt"), text.toUtf8());
+		write(rightDir + QStringLiteral("/codepage.txt"), utf16(text));
+		write(leftDir + QStringLiteral("/eol.txt"), "first\nlast\n");
+		write(rightDir + QStringLiteral("/eol.txt"), "first\nlast");
+		const QStringList names = { QStringLiteral("code.c"), QStringLiteral("wrap.txt"),
+			QStringLiteral("codepage.txt"), QStringLiteral("eol.txt") };
+		const QString textSame = QObject::tr("Text files are identical");
+		const QString textDiff = QObject::tr("Text files are different");
+		const auto waitFor = [](const FolderCompareView *view)
+		{
+			for (int i = 0; view != nullptr && i < 400 && view->isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+		// which of the four files a folder comparison finds identical
+		const auto identicalIn = [&](const char *what) {
+			FolderCompareView view;
+			view.start(QStringList{ leftDir, rightDir });
+			waitFor(&view);
+			QStringList same;
+			for (const QString &name : names)
+			{
+				const QString result = view.rowResultForTest(name);
+				if (result == textSame)
+					same.append(name);
+				else if (result != textDiff)
+					same.append(name + QStringLiteral(" (") + result + QLatin1Char(')'));
+			}
+			printf("  folder, %s: identical: %s\n", what,
+				same.isEmpty() ? "none" : qPrintable(same.join(QStringLiteral(", "))));
+			return same;
+		};
+		lm::setCompareOptionsForTest(0);
+		check(identicalIn("defaults").isEmpty(), "folder: four differences by default");
+		const struct { const String &option; const char *name; const char *what; } flags[] = {
+			{ OPT_CMP_FILTER_COMMENTLINES, "code.c", "folder: comment differences ignored" },
+			{ OPT_CMP_IGNORE_LINE_BREAKS, "wrap.txt", "folder: line breaks ignored" },
+			{ OPT_CMP_IGNORE_CODEPAGE, "codepage.txt", "folder: codepage differences ignored" },
+			{ OPT_CMP_IGNORE_MISSING_TRAILING_EOL, "eol.txt",
+				"folder: missing trailing EOL ignored" },
+		};
+		for (const auto &flag : flags)
+		{
+			lm::setCompareOptionsForTest(0);
+			lm::setCompareFlagForTest(flag.option, true);
+			check(identicalIn(flag.name) == QStringList{ QLatin1String(flag.name) }, flag.what);
+		}
+
+		// --- OK in the Options dialog recompares what is open ---
+		{
+			lm::setCompareOptionsForTest(0);
+			MainWindow window;
+			window.openFileComparison({ leftC, rightC });
+			window.openTableComparison(utf8Table, otherTable);
+			window.openFolderComparison(QStringList{ leftDir, rightDir });
+			settle();
+			auto *file = window.findChild<FileCompareView *>();
+			auto *tableView = window.findChild<TableCompareView *>();
+			auto *folder = window.findChild<FolderCompareView *>();
+			if (file == nullptr || tableView == nullptr || folder == nullptr)
+				return 2;
+			waitFor(folder);
+			int fileScans = 0, tableScans = 0;
+			QObject::connect(file, &FileCompareView::rescanned, [&fileScans]() { ++fileScans; });
+			QObject::connect(tableView, &TableCompareView::rescanned,
+				[&tableScans]() { ++tableScans; });
+			// the dialog is modal: tick the box and press a button from
+			// inside its event loop
+			const auto answerDialog = [&window](bool tick, QDialogButtonBox::StandardButton button) {
+				QTimer::singleShot(0, &window, [&window, tick, button]() {
+					auto *dialog = window.findChild<OptionsDialog *>();
+					auto *buttons = dialog != nullptr
+						? dialog->findChild<QDialogButtonBox *>() : nullptr;
+					if (buttons == nullptr)
+					{
+						printf("no Options dialog to answer\n");
+						std::exit(3);
+					}
+					dialog->pageForTest(OptionsDialog::ComparePage)->findChild<QCheckBox *>(
+						QStringLiteral("filterComments"))->setChecked(tick);
+					buttons->button(button)->click();
+				});
+				QMetaObject::invokeMethod(&window, "showOptions");
+			};
+
+			shown.clear();
+			answerDialog(true, QDialogButtonBox::Cancel);
+			settle();
+			check(fileScans == 0 && tableScans == 0 && file->diffCount() == 1
+				&& !lm::currentDiffOptions().bFilterCommentsLines,
+				"Options, Cancel: nothing recompared");
+
+			answerDialog(true, QDialogButtonBox::Ok);
+			settle();
+			check(fileScans == 1 && file->diffCount() == 0 && file->ignoredDiffCount() == 1
+				&& shown == QStringList{ binaryDiffer },
+				"Options, OK: the open file comparison takes the new options");
+			check(tableScans == 1 && tableView->diffCount() == 1,
+				"Options, OK: the open table is recompared too");
+			check(!folder->isComparingForTest()
+				&& folder->rowResultForTest(QStringLiteral("code.c")) == textDiff,
+				"Options, OK: a folder comparison keeps its results");
+
+			// every OK rescans, whatever was changed
+			answerDialog(true, QDialogButtonBox::Ok);
+			settle();
+			check(fileScans == 2 && tableScans == 2, "Options, OK again: recompared again");
+		}
+
+		lm::setCompareOptionsForTest(0);
+		lm::setMessageSinkForTest([](const QString &) {});
+		printf("compare options: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFiltersOpt))
+	{
+		// WinMerge's Tools > Filters: the Line Filters and Substitution
+		// Filters pages as LineFiltersDlg and SubstitutionFiltersDlg have
+		// them, where the filters are kept, what they do to comparisons
+		// and what OK rescans (CMainFrame::OnToolsFilters)
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		QStringList shown;
+		lm::setMessageSinkForTest([&shown](const QString &text) { shown.append(text); });
+		QStringList asked;
+		bool answer = false;
+		lm::setQuestionSinkForTest([&asked, &answer](const QString &text, bool *) {
+			asked.append(text);
+			return answer;
+		});
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 3; ++i)
+				QCoreApplication::processEvents();
+		};
+		const auto waitFor = [](const FolderCompareView *view)
+		{
+			for (int i = 0; view != nullptr && i < 400 && view->isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+		// type into the row editor a list has open, then Enter
+		const auto typeInEditor = [](QTreeWidget *list, const QString &text)
+		{
+			QCoreApplication::processEvents();
+			auto *editor = list->viewport()->findChild<QLineEdit *>();
+			if (editor == nullptr)
+				return false;
+			editor->setText(text);
+			QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(editor, &enter);
+			QCoreApplication::processEvents(); // the commit is queued
+			return true;
+		};
+		const auto button = [](QWidget *scope, const char *name) {
+			return scope->findChild<QPushButton *>(QLatin1String(name));
+		};
+		const auto click = [&button](QWidget *scope, const char *name)
+		{
+			if (QPushButton *found = button(scope, name))
+				found->click();
+			else
+				printf("  no button %s\n", name);
+		};
+		const auto usable = [&button](QWidget *scope, const char *name) {
+			const QPushButton *found = button(scope, name);
+			return found != nullptr && found->isEnabled();
+		};
+		const QString stampExpression = QStringLiteral("^stamp:");
+
+		// --- where the filters are kept ---
+		{
+			LineFiltersList lines;
+			lm::copyLineFilters(&lines);
+			SubstitutionFiltersList pairs;
+			lm::copySubstitutionFilters(&pairs);
+			check(!lm::lineFiltersEnabled() && lines.GetCount() == 0 && pairs.GetCount() == 0
+				&& !pairs.GetEnabled() && lm::currentLineFilters() == nullptr
+				&& lm::currentSubstitutionFilters() == nullptr,
+				"storage: no filters, both kinds switched off, by default");
+
+			// the one list MergeDesk kept up to 0.9.7
+			QSettings().setValue(QStringLiteral("LineFilters/List"),
+				QStringList{ QStringLiteral("1\t^one"), QStringLiteral("0\ttwo") });
+			lm::reloadFiltersForTest();
+			lm::copyLineFilters(&lines);
+			const QSettings settings;
+			check(lm::lineFiltersEnabled() && lines.GetCount() == 2
+				&& lines.GetAt(0).filterStr == "^one" && lines.GetAt(0).enabled
+				&& lines.GetAt(1).filterStr == "two" && !lines.GetAt(1).enabled
+				&& !settings.contains(QStringLiteral("LineFilters/List"))
+				&& settings.value(QStringLiteral("LineFilters/Values")).toInt() == 2
+				&& settings.value(QStringLiteral("LineFilters/Filter00")).toString()
+					== QStringLiteral("^one")
+				&& settings.value(QStringLiteral("LineFilters/Enabled00")).toInt() == 1
+				&& settings.value(QStringLiteral("LineFilters/Filter01")).toString()
+					== QStringLiteral("two")
+				&& settings.value(QStringLiteral("LineFilters/Enabled01")).toInt() == 0
+				&& settings.value(QStringLiteral("Settings/IgnoreRegExp")).toBool()
+				&& lm::currentLineFilters() != nullptr,
+				"storage: the old list moves to WinMerge's layout, switched on");
+
+			// a shorter list takes the leftovers away
+			LineFiltersList one;
+			one.AddFilter("^one", true);
+			lm::saveLineFilters(false, one);
+			check(settings.value(QStringLiteral("LineFilters/Values")).toInt() == 1
+				&& !settings.contains(QStringLiteral("LineFilters/Filter01"))
+				&& !settings.contains(QStringLiteral("LineFilters/Enabled01"))
+				&& !settings.value(QStringLiteral("Settings/IgnoreRegExp")).toBool()
+				&& lm::currentLineFilters() == nullptr,
+				"storage: a shorter list, switched off");
+			lm::saveLineFilters(false, LineFiltersList());
+		}
+
+		// --- the Line Filters page ---
+		{
+			FiltersDialog dialog;
+			auto *page = dialog.findChild<QWidget *>(QStringLiteral("lineFiltersPage"));
+			auto *enable = dialog.findChild<QCheckBox *>(QStringLiteral("enableLineFilters"));
+			auto *list = dialog.findChild<QTreeWidget *>(QStringLiteral("lineFilters"));
+			if (page == nullptr || enable == nullptr || list == nullptr)
+				return 1;
+			QStringList labels;
+			for (const QLabel *label : page->findChildren<QLabel *>())
+				labels.append(label->text());
+			const auto text = [&](const char *name) {
+				const QPushButton *found = button(&dialog, name);
+				return found != nullptr ? found->text() : QString();
+			};
+			check(dialog.windowTitle() == FiltersDialog::tr("Filters")
+				&& enable->text() == FiltersDialog::tr("Enable Line Filters")
+				&& !enable->isChecked()
+				&& labels == QStringList{
+					FiltersDialog::tr("Regular Expressions (one per line):") }
+				&& list->columnCount() == 1
+				&& list->headerItem()->text(0) == FiltersDialog::tr("Regular expression")
+				&& text("newLineFilter") == FiltersDialog::tr("New")
+				&& text("editLineFilter") == FiltersDialog::tr("Edit")
+				&& text("removeLineFilter") == FiltersDialog::tr("Remove"),
+				"line filters page: WinMerge's controls and texts");
+			check(usable(&dialog, "newLineFilter") && !usable(&dialog, "editLineFilter")
+				&& !usable(&dialog, "removeLineFilter"),
+				"line filters page: nothing selected, only New");
+
+			click(&dialog, "newLineFilter");
+			const bool typed = typeInEditor(list, stampExpression);
+			QTreeWidgetItem *row = list->topLevelItem(0);
+			check(typed && list->topLevelItemCount() == 1 && row->text(0) == stampExpression
+				&& row->checkState(0) == Qt::Unchecked && row->isSelected()
+				&& usable(&dialog, "editLineFilter") && usable(&dialog, "removeLineFilter"),
+				"line filters page: New adds an unticked row and edits it");
+			click(&dialog, "editLineFilter");
+			check(typeInEditor(list, QStringLiteral("first"))
+				&& list->topLevelItem(0)->text(0) == QStringLiteral("first"),
+				"line filters page: Edit edits the selected row");
+
+			click(&dialog, "newLineFilter");
+			typeInEditor(list, QStringLiteral("second"));
+			list->setCurrentItem(list->topLevelItem(0));
+			click(&dialog, "removeLineFilter");
+			check(list->topLevelItemCount() == 1
+				&& list->topLevelItem(0)->text(0) == QStringLiteral("second")
+				&& list->topLevelItem(0)->isSelected(),
+				"line filters page: Remove selects the row that took its place");
+			click(&dialog, "removeLineFilter");
+			check(list->topLevelItemCount() == 0 && !usable(&dialog, "editLineFilter")
+				&& !usable(&dialog, "removeLineFilter"),
+				"line filters page: the last row removed");
+
+			// a ticked expression that does not compile keeps the dialog open
+			click(&dialog, "newLineFilter");
+			typeInEditor(list, QStringLiteral("("));
+			list->topLevelItem(0)->setCheckState(0, Qt::Checked);
+			shown.clear();
+			dialog.accept();
+			printf("  message: %s\n", qPrintable(shown.value(0)));
+			check(dialog.result() != QDialog::Accepted && shown.size() == 1
+				&& shown.first().startsWith(QStringLiteral("#1: "))
+				&& shown.first().size() > 6,
+				"line filters page: a bad expression is refused, by its number");
+			list->topLevelItem(0)->setCheckState(0, Qt::Unchecked);
+			enable->setChecked(true);
+			dialog.accept();
+			check(dialog.result() == QDialog::Accepted && dialog.lineFiltersEnabled()
+				&& dialog.lineFilters().GetCount() == 1
+				&& dialog.lineFilters().GetAt(0).filterStr == "("
+				&& !dialog.lineFilters().GetAt(0).enabled,
+				"line filters page: unticked, it is kept as typed");
+
+			// the first row is selected when the dialog opens
+			LineFiltersList two;
+			two.AddFilter("one", false);
+			two.AddFilter("two", true);
+			lm::saveLineFilters(true, two);
+			FiltersDialog again;
+			auto *listAgain = again.findChild<QTreeWidget *>(QStringLiteral("lineFilters"));
+			check(again.findChild<QCheckBox *>(QStringLiteral("enableLineFilters"))->isChecked()
+				&& listAgain->topLevelItemCount() == 2
+				&& listAgain->topLevelItem(0)->isSelected()
+				&& listAgain->topLevelItem(0)->checkState(0) == Qt::Unchecked
+				&& listAgain->topLevelItem(1)->checkState(0) == Qt::Checked
+				&& usable(&again, "editLineFilter"),
+				"line filters page: shows the saved filters, the first selected");
+			lm::saveLineFilters(false, LineFiltersList());
+		}
+
+		// --- the Substitution Filters page ---
+		{
+			FiltersDialog dialog;
+			dialog.showPage(FiltersDialog::SubstitutionFiltersPage);
+			auto *page = dialog.findChild<QWidget *>(QStringLiteral("substitutionFiltersPage"));
+			auto *enable = dialog.findChild<QCheckBox *>(
+				QStringLiteral("enableSubstitutionFilters"));
+			auto *list = dialog.findChild<QTreeWidget *>(QStringLiteral("substitutionFilters"));
+			if (page == nullptr || enable == nullptr || list == nullptr)
+				return 1;
+			QStringList labels;
+			for (const QLabel *label : page->findChildren<QLabel *>())
+				labels.append(label->text());
+			QStringList headers;
+			for (int column = 0; column < list->columnCount(); ++column)
+				headers.append(list->headerItem()->text(column));
+			const auto text = [&](const char *name) {
+				const QPushButton *found = button(&dialog, name);
+				return found != nullptr ? found->text() : QString();
+			};
+			check(dialog.currentPage() == FiltersDialog::SubstitutionFiltersPage
+				&& labels == QStringList{ FiltersDialog::tr(
+					"Changes to the listed pairs below will be ignored or marked as "
+					"insignificant. Patches are unaffected.") }
+				&& enable->text() == FiltersDialog::tr("Enable") && !enable->isChecked()
+				&& headers == QStringList{ FiltersDialog::tr("Find what"),
+					FiltersDialog::tr("Replace with"), FiltersDialog::tr("Regular expression"),
+					FiltersDialog::tr("Match case"),
+					FiltersDialog::tr("Match whole word only") }
+				&& text("addSubstitutionFilter") == FiltersDialog::tr("Add")
+				&& text("removeSubstitutionFilter") == FiltersDialog::tr("Remove")
+				&& text("clearSubstitutionFilters") == FiltersDialog::tr("Clear"),
+				"substitution page: WinMerge's controls and texts");
+			check(usable(&dialog, "addSubstitutionFilter")
+				&& !usable(&dialog, "removeSubstitutionFilter")
+				&& !usable(&dialog, "clearSubstitutionFilters"),
+				"substitution page: nothing listed, only Add");
+
+			click(&dialog, "addSubstitutionFilter");
+			QTreeWidgetItem *row = list->topLevelItem(0);
+			const QString editHere = FiltersDialog::tr("<Edit here>");
+			check(list->topLevelItemCount() == 1 && row->text(0) == editHere
+				&& row->text(1) == editHere && row->checkState(0) == Qt::Checked
+				&& row->checkState(2) == Qt::Unchecked && row->checkState(3) == Qt::Unchecked
+				&& row->checkState(4) == Qt::Unchecked && row->isSelected()
+				&& usable(&dialog, "removeSubstitutionFilter")
+				&& usable(&dialog, "clearSubstitutionFilters"),
+				"substitution page: Add lists a ticked pair to edit");
+
+			// the two texts edit in place; the other columns only tick
+			list->editItem(row, 0);
+			const bool typedPattern = typeInEditor(list, QStringLiteral("foo"));
+			list->editItem(row, 1);
+			const bool typedReplacement = typeInEditor(list, QStringLiteral("bar"));
+			list->editItem(row, 2);
+			QCoreApplication::processEvents();
+			const bool noEditor = list->viewport()->findChild<QLineEdit *>() == nullptr;
+			check(typedPattern && typedReplacement && row->text(0) == QStringLiteral("foo")
+				&& row->text(1) == QStringLiteral("bar") && noEditor,
+				"substitution page: the texts edit in place, the other columns do not");
+
+			// with a regular expression "whole word" does not count
+			row->setCheckState(2, Qt::Checked);
+			row->setCheckState(4, Qt::Checked);
+			enable->setChecked(true);
+			dialog.accept();
+			const SubstitutionFiltersList &accepted = dialog.substitutionFilters();
+			check(dialog.result() == QDialog::Accepted && accepted.GetEnabled()
+				&& accepted.GetCount() == 1 && accepted.GetAt(0).pattern == "foo"
+				&& accepted.GetAt(0).replacement == "bar" && accepted.GetAt(0).enabled
+				&& accepted.GetAt(0).useRegExp && !accepted.GetAt(0).caseSensitive
+				&& !accepted.GetAt(0).matchWholeWordOnly,
+				"substitution page: the pair as accepted");
+
+			// a ticked regular expression that does not compile
+			FiltersDialog bad;
+			auto *badList = bad.findChild<QTreeWidget *>(QStringLiteral("substitutionFilters"));
+			click(&bad, "addSubstitutionFilter");
+			click(&bad, "addSubstitutionFilter");
+			badList->topLevelItem(1)->setText(0, QStringLiteral("("));
+			badList->topLevelItem(1)->setCheckState(2, Qt::Checked);
+			shown.clear();
+			bad.accept();
+			printf("  message: %s\n", qPrintable(shown.value(0)));
+			check(bad.result() != QDialog::Accepted && shown.size() == 1
+				&& shown.first().startsWith(QStringLiteral("#2: "))
+				&& bad.currentPage() == FiltersDialog::SubstitutionFiltersPage,
+				"substitution page: a bad expression is refused, on its page");
+			badList->setCurrentItem(badList->topLevelItem(0));
+			click(&bad, "removeSubstitutionFilter");
+			const bool removed = badList->topLevelItemCount() == 1
+				&& badList->topLevelItem(0)->text(0) == QStringLiteral("(")
+				&& badList->topLevelItem(0)->isSelected();
+			click(&bad, "clearSubstitutionFilters");
+			check(removed && badList->topLevelItemCount() == 0
+				&& !usable(&bad, "removeSubstitutionFilter")
+				&& !usable(&bad, "clearSubstitutionFilters"),
+				"substitution page: Remove and Clear");
+		}
+
+		// --- what the filters do to comparisons ---
+		const QByteArray leftStamp = "alpha\nstamp: 2026-01-01\nomega\n";
+		const QByteArray rightStamp = "alpha\nstamp: 2026-02-02\nomega\n";
+		const QString leftText = dir.filePath(QStringLiteral("left.txt"));
+		const QString rightText = dir.filePath(QStringLiteral("right.txt"));
+		write(leftText, leftStamp);
+		write(rightText, rightStamp);
+		const QString leftTable = dir.filePath(QStringLiteral("left.csv"));
+		const QString rightTable = dir.filePath(QStringLiteral("right.csv"));
+		write(leftTable, "key,value\nstamp:,2026-01-01\nname,x\n");
+		write(rightTable, "key,value\nstamp:,2026-02-02\nname,x\n");
+		const QString stamp = QStringLiteral("stamp.txt");
+		const QString other = QStringLiteral("other.txt");
+		QStringList folderPairs[2];
+		for (int i = 0; i < 2; ++i)
+		{
+			const QString number = QString::number(i + 1);
+			folderPairs[i] = { dir.filePath(QStringLiteral("L") + number),
+				dir.filePath(QStringLiteral("R") + number) };
+			write(folderPairs[i].at(0) + QLatin1Char('/') + stamp, leftStamp);
+			write(folderPairs[i].at(1) + QLatin1Char('/') + stamp, rightStamp);
+			write(folderPairs[i].at(0) + QLatin1Char('/') + other, "one\n");
+			write(folderPairs[i].at(1) + QLatin1Char('/') + other, "two\n");
+		}
+		const QString textSame = QObject::tr("Text files are identical");
+		const QString textDiff = QObject::tr("Text files are different");
+		const QString binaryDiffer = QCoreApplication::translate("MessageBoxes",
+			"Selected files are identical (with current settings).\n"
+			"But differ at the binary level.");
+		const QString question = QCoreApplication::translate("MessageBoxes",
+			"Filters updated. Refresh all open folder compares?\n\n"
+			"Select 'No' to refresh later.");
+		lm::setCompareOptionsForTest(0);
+		{
+			// text, table and folder: significant differences, ignored ones
+			const auto compared = [&]() {
+				QString result;
+				{
+					MainWindow window;
+					window.openFileComparison({ leftText, rightText });
+					window.openTableComparison(leftTable, rightTable);
+					settle();
+					auto *file = window.findChild<FileCompareView *>();
+					auto *table = window.findChild<TableCompareView *>();
+					result = QStringLiteral("text %1+%2, table %3, ")
+						.arg(file != nullptr ? file->diffCount() : -1)
+						.arg(file != nullptr ? file->ignoredDiffCount() : -1)
+						.arg(table != nullptr ? table->diffCount() : -1);
+				}
+				FolderCompareView view;
+				view.start(folderPairs[0]);
+				waitFor(&view);
+				result += view.rowResultForTest(stamp) == textSame ? QStringLiteral("folder same")
+					: view.rowResultForTest(stamp) == textDiff ? QStringLiteral("folder different")
+					: view.rowResultForTest(stamp);
+				printf("  %s\n", qPrintable(result));
+				return result;
+			};
+			const QString different = QStringLiteral("text 1+0, table 1, folder different");
+			const QString ignored = QStringLiteral("text 0+1, table 0, folder same");
+			LineFiltersList lines;
+			lines.AddFilter(stampExpression.toStdString(), true);
+			lm::saveLineFilters(false, lines);
+			check(compared() == different, "line filters: listed but switched off");
+			lm::saveLineFilters(true, lines);
+			check(compared() == ignored, "line filters: switched on, the line is ignored");
+			lm::saveLineFilters(false, LineFiltersList());
+
+			SubstitutionFiltersList pairs;
+			pairs.Add("2026-01-01", "2026-02-02", false, true, false, true);
+			pairs.SetEnabled(false);
+			lm::saveSubstitutionFilters(pairs);
+			check(compared() == different, "substitution filters: listed but switched off");
+			pairs.SetEnabled(true);
+			lm::saveSubstitutionFilters(pairs);
+			check(compared() == ignored, "substitution filters: the listed pair is ignored");
+			lm::saveSubstitutionFilters(SubstitutionFiltersList());
+		}
+
+		// --- OK in the dialog: what is rescanned ---
+		MainWindow window;
+		window.openFileComparison({ leftText, rightText });
+		window.openTableComparison(leftTable, rightTable);
+		window.openFolderComparison(folderPairs[0]);
+		window.openFolderComparison(folderPairs[1]);
+		window.openSelector();
+		settle();
+		auto *tabs = window.findChild<QTabWidget *>();
+		auto *file = window.findChild<FileCompareView *>();
+		auto *table = window.findChild<TableCompareView *>();
+		const QList<FolderCompareView *> folders = window.findChildren<FolderCompareView *>();
+		auto *selector = window.findChild<NewComparisonView *>();
+		if (tabs == nullptr || file == nullptr || table == nullptr || folders.size() != 2
+			|| selector == nullptr)
+			return 2;
+		for (const FolderCompareView *folder : folders)
+			waitFor(folder);
+		int fileScans = 0, tableScans = 0;
+		QObject::connect(file, &FileCompareView::rescanned, [&fileScans]() { ++fileScans; });
+		QObject::connect(table, &TableCompareView::rescanned, [&tableScans]() { ++tableScans; });
+		const auto foldersComparing = [&folders]() {
+			int comparing = 0;
+			for (const FolderCompareView *folder : folders)
+				comparing += folder->isComparingForTest() ? 1 : 0;
+			return comparing;
+		};
+		const auto folderResults = [&folders](const QString &name) {
+			QStringList results;
+			for (const FolderCompareView *folder : folders)
+				results.append(folder->rowResultForTest(name));
+			return results;
+		};
+		const auto savedLines = []() {
+			LineFiltersList lines;
+			lm::copyLineFilters(&lines);
+			QStringList saved{ lm::lineFiltersEnabled() ? QStringLiteral("on")
+				: QStringLiteral("off") };
+			for (size_t i = 0; i < lines.GetCount(); ++i)
+				saved.append((lines.GetAt(i).enabled ? QStringLiteral("1 ") : QStringLiteral("0 "))
+					+ QString::fromStdString(lines.GetAt(i).filterStr));
+			return saved;
+		};
+		const auto savedPairs = []() {
+			SubstitutionFiltersList pairs;
+			lm::copySubstitutionFilters(&pairs);
+			QStringList saved{ pairs.GetEnabled() ? QStringLiteral("on") : QStringLiteral("off") };
+			for (size_t i = 0; i < pairs.GetCount(); ++i)
+				saved.append(QString::fromStdString(pairs.GetAt(i).pattern) + QStringLiteral(" > ")
+					+ QString::fromStdString(pairs.GetAt(i).replacement));
+			return saved;
+		};
+		check(file->diffCount() == 1 && table->diffCount() == 1
+			&& folderResults(stamp) == QStringList{ textDiff, textDiff }
+			&& savedLines() == QStringList{ QStringLiteral("off") }
+			&& savedPairs() == QStringList{ QStringLiteral("off") },
+			"no filters: the line is a difference everywhere");
+
+		// the dialog is window-modal: edit it and press a button from
+		// inside its event loop
+		using Edit = std::function<void(FiltersDialog *)>;
+		const auto withDialog = [&window](const Edit &edit,
+			QDialogButtonBox::StandardButton pressed)
+		{
+			QTimer::singleShot(0, &window, [&window, edit, pressed]() {
+				auto *dialog = window.findChild<FiltersDialog *>();
+				auto *buttons = dialog != nullptr
+					? dialog->findChild<QDialogButtonBox *>() : nullptr;
+				if (buttons == nullptr)
+				{
+					printf("no Filters dialog to answer\n");
+					std::exit(3);
+				}
+				if (edit)
+					edit(dialog);
+				buttons->button(pressed)->click();
+			});
+			QMetaObject::invokeMethod(&window, "showFilters");
+		};
+		const auto lineList = [](FiltersDialog *dialog) {
+			return dialog->findChild<QTreeWidget *>(QStringLiteral("lineFilters"));
+		};
+		const auto lineSwitch = [](FiltersDialog *dialog) {
+			return dialog->findChild<QCheckBox *>(QStringLiteral("enableLineFilters"));
+		};
+		// New, type the expression, tick it
+		const auto addingLine = [&](const QString &expression) -> Edit {
+			return [&, expression](FiltersDialog *dialog) {
+				click(dialog, "newLineFilter");
+				if (!typeInEditor(lineList(dialog), expression))
+					printf("  no editor on the new row\n");
+				QTreeWidget *list = lineList(dialog);
+				list->topLevelItem(list->topLevelItemCount() - 1)->setCheckState(0, Qt::Checked);
+				if (!dialog->isVisible())
+					printf("  Enter in the editor closed the dialog\n");
+			};
+		};
+		const auto switchingLines = [&](bool on) -> Edit {
+			return [&, on](FiltersDialog *dialog) { lineSwitch(dialog)->setChecked(on); };
+		};
+		const auto switchingPairs = [](bool on) -> Edit {
+			return [on](FiltersDialog *dialog) {
+				dialog->findChild<QCheckBox *>(
+					QStringLiteral("enableSubstitutionFilters"))->setChecked(on);
+			};
+		};
+		const QString on = QStringLiteral("on");
+		const QString off = QStringLiteral("off");
+		const QString stampLine = QStringLiteral("1 ") + stampExpression;
+
+		// a text comparison in front
+		tabs->setCurrentWidget(file);
+		settle();
+		shown.clear();
+		withDialog([&](FiltersDialog *dialog) {
+			addingLine(stampExpression)(dialog);
+			lineSwitch(dialog)->setChecked(true);
+		}, QDialogButtonBox::Ok);
+		settle();
+		check(savedLines() == QStringList{ on, stampLine }, "a new line filter is saved");
+		check(fileScans == 1 && file->diffCount() == 0 && file->ignoredDiffCount() == 1,
+			"text in front: the text comparison is rescanned at once");
+		check(tableScans == 1 && table->diffCount() == 0, "text in front: the table too");
+		check(shown == QStringList{ binaryDiffer, binaryDiffer },
+			"text in front: identical files are reported");
+		check(asked.isEmpty() && foldersComparing() == 0
+			&& folderResults(stamp) == QStringList{ textDiff, textDiff },
+			"text in front: folder comparisons are left alone");
+
+		withDialog({}, QDialogButtonBox::Ok);
+		settle();
+		check(fileScans == 1 && tableScans == 1, "unchanged filters: nothing is rescanned");
+
+		withDialog(switchingLines(false), QDialogButtonBox::Cancel);
+		settle();
+		check(fileScans == 1 && tableScans == 1
+			&& savedLines() == QStringList{ on, stampLine },
+			"Cancel: nothing is saved or rescanned");
+
+		// a table is the same kind of document; the switch alone is a change
+		tabs->setCurrentWidget(table);
+		settle();
+		withDialog(switchingLines(false), QDialogButtonBox::Ok);
+		settle();
+		check(savedLines() == QStringList{ off, stampLine } && fileScans == 2
+			&& tableScans == 2 && file->diffCount() == 1 && file->ignoredDiffCount() == 0
+			&& table->diffCount() == 1,
+			"table in front: line filters switched off, both rescanned");
+
+		// substitution filters rescan them as well
+		tabs->setCurrentWidget(file);
+		settle();
+		withDialog([&](FiltersDialog *dialog) {
+			dialog->showPage(FiltersDialog::SubstitutionFiltersPage);
+			click(dialog, "addSubstitutionFilter");
+			auto *list = dialog->findChild<QTreeWidget *>(QStringLiteral("substitutionFilters"));
+			list->topLevelItem(0)->setText(0, QStringLiteral("2026-01-01"));
+			list->topLevelItem(0)->setText(1, QStringLiteral("2026-02-02"));
+			switchingPairs(true)(dialog);
+		}, QDialogButtonBox::Ok);
+		settle();
+		check(savedPairs() == QStringList{ on, QStringLiteral("2026-01-01 > 2026-02-02") }
+			&& fileScans == 3 && tableScans == 3 && file->diffCount() == 0
+			&& file->ignoredDiffCount() == 1 && table->diffCount() == 0,
+			"text in front: a new substitution filter rescans both");
+		{
+			FiltersDialog reopened;
+			check(reopened.currentPage() == FiltersDialog::SubstitutionFiltersPage,
+				"the dialog opens on the page it was accepted on");
+		}
+
+		// a folder comparison in front: substitution filters alone change
+		// nothing there
+		tabs->setCurrentWidget(folders.at(0));
+		settle();
+		asked.clear();
+		withDialog(switchingPairs(false), QDialogButtonBox::Ok);
+		const int startedOnPairs = foldersComparing();
+		settle();
+		check(savedPairs().value(0) == off && asked.isEmpty() && startedOnPairs == 0
+			&& fileScans == 3 && tableScans == 3,
+			"folder in front: changed substitution filters are only saved");
+
+		// changed line filters ask first
+		answer = false;
+		withDialog(switchingLines(true), QDialogButtonBox::Ok);
+		const int startedOnNo = foldersComparing();
+		settle();
+		check(asked == QStringList{ question }, "folder in front: asks before refreshing");
+		check(startedOnNo == 0 && savedLines() == QStringList{ on, stampLine }
+			&& folderResults(stamp) == QStringList{ textDiff, textDiff },
+			"folder in front, No: saved, refreshed later");
+		check(fileScans == 3 && tableScans == 3 && file->diffCount() == 0,
+			"folder in front: text and table comparisons are left alone");
+
+		asked.clear();
+		answer = true;
+		const QString second = QStringLiteral("^never there$");
+		withDialog([&](FiltersDialog *dialog) {
+			dialog->showPage(FiltersDialog::LineFiltersPage);
+			addingLine(second)(dialog);
+		}, QDialogButtonBox::Ok);
+		const int startedOnYes = foldersComparing();
+		for (const FolderCompareView *folder : folders)
+			waitFor(folder);
+		settle();
+		check(asked == QStringList{ question } && startedOnYes == 2,
+			"folder in front, Yes: every folder comparison is refreshed");
+		check(folderResults(stamp) == QStringList{ textSame, textSame }
+			&& folderResults(other) == QStringList{ textDiff, textDiff },
+			"the refreshed folder comparisons take the filters");
+		check(fileScans == 3 && tableScans == 3, "folder in front, Yes: no text rescans");
+
+		// nothing to rescan in front: the filters are only saved
+		tabs->setCurrentWidget(selector);
+		settle();
+		asked.clear();
+		withDialog([&](FiltersDialog *dialog) {
+			lineList(dialog)->setCurrentItem(lineList(dialog)->topLevelItem(0));
+			click(dialog, "removeLineFilter");
+		}, QDialogButtonBox::Ok);
+		const int startedElsewhere = foldersComparing();
+		settle();
+		check(savedLines() == QStringList{ on, QStringLiteral("1 ") + second }
+			&& asked.isEmpty() && startedElsewhere == 0 && fileScans == 3 && tableScans == 3,
+			"another tab in front: saved, nothing rescanned");
+
+		lm::setMessageSinkForTest([](const QString &) {});
+		lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+		printf("filters: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFileFiltersOpt))
+	{
+		// WinMerge's file filter: the preset filters shipped with the
+		// application, the File Filters page (FileFiltersDlg), the one
+		// global filter folder comparisons go by, its status bar pane and
+		// the "Folder: Filter" field of the selection screen
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		QStringList shown;
+		lm::setMessageSinkForTest([&shown](const QString &text) { shown.append(text); });
+		QStringList asked;
+		bool answer = false;
+		lm::setQuestionSinkForTest([&asked, &answer](const QString &text, bool *) {
+			asked.append(text);
+			return answer;
+		});
+		QStringList edited;
+		FiltersDialog::setEditorForTest([&edited](const QString &path) { edited.append(path); });
+		QString chosen; // what the file dialogs answer
+		QStringList chooserCalls;
+		FiltersDialog::setFileChooserForTest([&](bool save, const QString &folder) {
+			chooserCalls.append((save ? QStringLiteral("save ") : QStringLiteral("open ")) + folder);
+			return chosen;
+		});
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 3; ++i)
+				QCoreApplication::processEvents();
+		};
+		const auto waitFor = [](const FolderCompareView *view)
+		{
+			for (int i = 0; view != nullptr && i < 400 && view->isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+		const auto button = [](QWidget *scope, const char *name) {
+			return scope->findChild<QPushButton *>(QLatin1String(name));
+		};
+		const auto click = [&button](QWidget *scope, const char *name)
+		{
+			if (QPushButton *found = button(scope, name))
+				found->click();
+			else
+				printf("  no button %s\n", name);
+		};
+		const auto usable = [&button](QWidget *scope, const char *name) {
+			const QPushButton *found = button(scope, name);
+			return found != nullptr && found->isEnabled();
+		};
+		const auto leaveField = [](FileFilterCombo *combo)
+		{
+			QFocusEvent out(QEvent::FocusOut);
+			QCoreApplication::sendEvent(combo->lineEdit(), &out);
+		};
+		const auto type = [&leaveField](FileFilterCombo *combo, const QString &text)
+		{
+			combo->setEditText(text);
+			leaveField(combo);
+		};
+		const QString sourceControl = QStringLiteral("Exclude Source Control");
+		const QString settingsKey = QStringLiteral("Settings/FileFilterCurrent");
+
+		// --- what ships with the application ---
+		{
+			const QDir shipped(lm::sharedFiltersDir());
+			const std::vector<FileFilterInfo> presets = lm::globalFileFilter()->GetFileFilters();
+			QStringList names;
+			for (const FileFilterInfo &preset : presets)
+				names.append(QString::fromStdString(preset.name));
+			printf("  shipped filters in %s: %d\n", qPrintable(shipped.path()),
+				static_cast<int>(presets.size()));
+			check(shipped.exists() && presets.size() == 12 && names.contains(sourceControl)
+				&& names.contains(QStringLiteral("Visual C++ loose"))
+				&& shipped.exists(QStringLiteral("FileFilter.tmpl")),
+				"shipped: WinMerge's twelve preset filters and the template");
+			check(lm::fileFilterMask() == QStringLiteral("*.*")
+				&& !lm::userFiltersDir().isEmpty()
+				&& lm::userFiltersDir().endsWith(QStringLiteral("/Filters")),
+				"the filter is *.* by default, the user's folder apart");
+		}
+
+		// from here on: filter folders of the test's own. Two presets and
+		// the template stand for the shipped ones
+		const QString sharedDir = dir.filePath(QStringLiteral("shared"));
+		const QString userDir = dir.filePath(QStringLiteral("user"));
+		QDir().mkpath(sharedDir);
+		{
+			const QDir shipped(lm::sharedFiltersDir());
+			for (const char *name : { "SourceControl.flt", "Merge_GnuC_loose.flt",
+					"FileFilter.tmpl" })
+				QFile::copy(shipped.filePath(QLatin1String(name)),
+					QDir(sharedDir).filePath(QLatin1String(name)));
+		}
+		lm::setFiltersDirsForTest(sharedDir, userDir);
+
+		// --- the mask the folder comparison's own field kept until 0.9.7 ---
+		{
+			QSettings().setValue(QStringLiteral("FolderCompare/Filter"),
+				QStringLiteral("*.cpp;*.h"));
+			lm::installFileFilters();
+			const QSettings settings;
+			check(lm::fileFilterMask() == QStringLiteral("*.cpp;*.h")
+				&& !settings.contains(QStringLiteral("FolderCompare/Filter"))
+				&& settings.value(settingsKey).toString() == QStringLiteral("*.cpp;*.h"),
+				"the old field's mask becomes the file filter");
+			lm::setFileFilterMask(QString());
+			check(lm::fileFilterMask() == QStringLiteral("*.*")
+				&& settings.value(settingsKey).toString() == QStringLiteral("*.*"),
+				"no mask is *.*");
+		}
+
+		// --- the File Filters page ---
+		{
+			QSettings().remove(QStringLiteral("Settings/FilterStartPage"));
+			FiltersDialog dialog;
+			auto *page = dialog.findChild<QWidget *>(QStringLiteral("fileFiltersPage"));
+			auto *mask = dialog.findChild<FileFilterCombo *>(QStringLiteral("fileFilterMask"));
+			auto *list = dialog.findChild<QTreeWidget *>(QStringLiteral("presetFilters"));
+			if (page == nullptr || mask == nullptr || list == nullptr)
+				return 1;
+			QStringList labels;
+			for (const QLabel *label : page->findChildren<QLabel *>())
+				labels.append(label->text());
+			QStringList headers;
+			for (int column = 0; column < list->columnCount(); ++column)
+				headers.append(list->headerItem()->text(column));
+			const auto text = [&](const char *name) {
+				const QPushButton *found = button(&dialog, name);
+				return found != nullptr ? found->text() : QString();
+			};
+			check(dialog.currentPage() == FiltersDialog::FileFiltersPage
+				&& labels == QStringList{ FiltersDialog::tr("Mask / Filter Expression"),
+					FiltersDialog::tr("Preset Filters") }
+				&& mask->lineEdit()->placeholderText() == FiltersDialog::tr("e.g. %1")
+					.arg(QStringLiteral("*.txt|fe:Size > 100KB"))
+				&& headers == QStringList{ FiltersDialog::tr("Name"),
+					FiltersDialog::tr("Description"), FiltersDialog::tr("Location") }
+				&& text("testFileFilter") == FiltersDialog::tr("Test...")
+				&& text("installFileFilter") == FiltersDialog::tr("Install...")
+				&& text("newFileFilter") == FiltersDialog::tr("New...")
+				&& text("editFileFilter") == FiltersDialog::tr("Edit...")
+				&& text("deleteFileFilter") == FiltersDialog::tr("Delete..."),
+				"page: the first one, with WinMerge's controls and texts");
+
+			const auto row = [list](const QString &name) -> QTreeWidgetItem * {
+				for (int i = 0; i < list->topLevelItemCount(); ++i)
+					if (list->topLevelItem(i)->text(0) == name)
+						return list->topLevelItem(i);
+				return nullptr;
+			};
+			const auto ticked = [list]() {
+				QStringList names;
+				for (int i = 0; i < list->topLevelItemCount(); ++i)
+					if (list->topLevelItem(i)->checkState(0) == Qt::Checked)
+						names.append(list->topLevelItem(i)->text(0));
+				return names;
+			};
+			QTreeWidgetItem *preset = row(sourceControl);
+			check(list->topLevelItemCount() == 2 && preset != nullptr
+				&& preset->text(1) == QStringLiteral("Exclude Source Control files and directories")
+				&& preset->text(2) == QDir(sharedDir).filePath(QStringLiteral("SourceControl.flt"))
+				&& ticked().isEmpty() && mask->mask() == QStringLiteral("*.*")
+				&& usable(&dialog, "testFileFilter") && usable(&dialog, "installFileFilter")
+				&& usable(&dialog, "newFileFilter") && !usable(&dialog, "editFileFilter")
+				&& !usable(&dialog, "deleteFileFilter"),
+				"page: the preset filters listed, the filter in use in the field");
+			if (preset == nullptr)
+				return 1;
+
+			// a tick writes the preset into the mask, and back
+			preset->setCheckState(0, Qt::Checked);
+			const QString withPreset = mask->mask();
+			preset->setCheckState(0, Qt::Unchecked);
+			check(withPreset == QStringLiteral("*.*;pf:") + sourceControl
+				&& mask->mask() == QStringLiteral("*.*"),
+				"page: ticking a preset names it in the mask");
+			// a mask typed with a preset ticks it once the field is left
+			type(mask, QStringLiteral("*.c;pf:") + sourceControl);
+			const QStringList tickedByMask = ticked();
+			type(mask, QStringLiteral("*.c"));
+			check(tickedByMask == QStringList{ sourceControl } && ticked().isEmpty(),
+				"page: a preset named in the mask is ticked");
+
+			// what does not parse turns the field red and says why
+			type(mask, QStringLiteral("*.*|fe:Size >"));
+			const QStringList syntaxErrors = mask->errors();
+			const bool red = !mask->lineEdit()->styleSheet().isEmpty()
+				&& !mask->lineEdit()->toolTip().isEmpty();
+			type(mask, QStringLiteral("pf:No such filter"));
+			const QStringList nameErrors = mask->errors();
+			type(mask, QStringLiteral("*.*|fe:Size > 100KB"));
+			printf("  errors: %s | %s\n", qPrintable(syntaxErrors.join(QStringLiteral(" / "))),
+				qPrintable(nameErrors.join(QStringLiteral(" / "))));
+			check(syntaxErrors.size() == 1 && red && nameErrors.size() == 1
+				&& nameErrors.first().startsWith(QCoreApplication::translate("FileFilters",
+					"Filter name not found"))
+				&& nameErrors.first().endsWith(QStringLiteral(": No such filter"))
+				&& mask->errors().isEmpty() && mask->lineEdit()->styleSheet().isEmpty(),
+				"page: a mask that does not parse is marked, with the reason");
+
+			// Test...: names against the mask as it stands
+			const auto tested = [&](const QString &maskText, const QString &name, bool folder) {
+				type(mask, maskText);
+				QString result;
+				QTimer::singleShot(0, &dialog, [&]() {
+					auto *test = dialog.findChild<QDialog *>(QStringLiteral("testFilterDialog"));
+					if (test == nullptr)
+					{
+						printf("no Test Filter dialog\n");
+						std::exit(3);
+					}
+					test->findChild<QLineEdit *>(QStringLiteral("testFilterText"))->setText(name);
+					test->findChild<QCheckBox *>(QStringLiteral("testFilterIsFolder"))
+						->setChecked(folder);
+					click(test, "testFilterRun");
+					result = test->findChild<QLabel *>(QStringLiteral("testFilterName"))->text()
+						+ QStringLiteral(" -> ") + test->findChild<QPlainTextEdit *>(
+							QStringLiteral("testFilterResults"))->toPlainText();
+					test->reject();
+				});
+				click(&dialog, "testFileFilter");
+				return result;
+			};
+			check(tested(QStringLiteral("*.cpp"), QStringLiteral("a.cpp"), false)
+					== QStringLiteral("*.cpp -> a.cpp: passed")
+				&& tested(QStringLiteral("*.cpp"), QStringLiteral("a.txt"), false)
+					== QStringLiteral("*.cpp -> a.txt: failed")
+				&& tested(QStringLiteral("*.*;!build/"), QStringLiteral("src/build"), true)
+					== QStringLiteral("*.*;!build/ -> src/build: failed")
+				&& tested(QStringLiteral("*.*;!build/"), QStringLiteral("src/lib"), true)
+					== QStringLiteral("*.*;!build/ -> src/lib: passed"),
+				"Test: names pass or fail the mask");
+			preset->setCheckState(0, Qt::Checked);
+			const QString presetTest = tested(mask->mask(), QStringLiteral(".git"), true);
+			preset->setCheckState(0, Qt::Unchecked);
+			check(presetTest == QStringLiteral("*.*;!build/;pf:") + sourceControl
+					+ QStringLiteral(" -> .git: failed"),
+				"Test: the ticked presets count, each named once");
+			type(mask, QStringLiteral("*.*"));
+			preset = nullptr; // New, Install and Delete make the rows anew
+
+			// New...: a filter from the template, in the user's folder
+			chosen = QDir(userDir).filePath(QStringLiteral("mine.txt"));
+			click(&dialog, "newFileFilter");
+			const QString minePath = QDir(userDir).filePath(QStringLiteral("mine.flt"));
+			QFile mineFile(minePath);
+			if (!mineFile.open(QIODevice::ReadOnly))
+				std::exit(2);
+			const QByteArray mineText = mineFile.readAll();
+			mineFile.close();
+			QTreeWidgetItem *mine = row(QStringLiteral("mine"));
+			check(chooserCalls == QStringList{ QStringLiteral("save ") + userDir }
+				&& mineText.contains("name: mine\n") && !mineText.contains("${name}")
+				&& edited == QStringList{ minePath } && mine != nullptr
+				&& list->topLevelItemCount() == 3 && mine->text(2) == minePath
+				&& ticked() == QStringList{ QStringLiteral("mine") }
+				&& mask->mask() == QStringLiteral("*.*;pf:mine")
+				&& !lm::globalFileFilter()->GetFileFilterPath("mine").empty(),
+				"New: the template becomes a filter, opened, listed and ticked");
+
+			// Edit...: the editor, and what it saved is read again
+			list->setCurrentItem(mine);
+			const bool canEdit = usable(&dialog, "editFileFilter")
+				&& usable(&dialog, "deleteFileFilter");
+			edited.clear();
+			click(&dialog, "editFileFilter");
+			write(minePath, "name: mine\ndesc: broken\ndef: include\nf: (\n");
+			for (int i = 0; i < 200 && row(QStringLiteral("mine")) != nullptr
+				&& row(QStringLiteral("mine"))->background(0).style() == Qt::NoBrush; ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+			mine = row(QStringLiteral("mine"));
+			printf("  the edited preset: %s\n",
+				mine != nullptr ? qPrintable(mine->toolTip(0)) : "(gone)");
+			check(canEdit && edited == QStringList{ minePath } && mine != nullptr
+				&& mine->background(0).style() != Qt::NoBrush
+				&& mine->toolTip(0).startsWith(QCoreApplication::translate("FileFilters",
+					"Invalid regular expression"))
+				&& row(sourceControl) != nullptr
+				&& row(sourceControl)->toolTip(0) == sourceControl
+				&& row(sourceControl)->background(0).style() == Qt::NoBrush,
+				"Edit: the editor opens, a saved error marks the preset");
+
+			// Install...: a filter file from elsewhere
+			const QString elsewhere = dir.filePath(QStringLiteral("downloads/theirs.flt"));
+			write(elsewhere, "name: Theirs\ndesc: from elsewhere\ndef: include\nf: \\.tmp$\n");
+			chosen = elsewhere;
+			chooserCalls.clear();
+			click(&dialog, "installFileFilter");
+			const QString theirsPath = QDir(userDir).filePath(QStringLiteral("theirs.flt"));
+			check(chooserCalls.size() == 1 && chooserCalls.first().startsWith(QStringLiteral("open"))
+				&& QFile::exists(theirsPath) && row(QStringLiteral("Theirs")) != nullptr
+				&& row(QStringLiteral("Theirs"))->checkState(0) == Qt::Checked
+				&& mask->mask() == QStringLiteral("*.*;pf:mine;pf:Theirs")
+				&& !lm::globalFileFilter()->GetFileFilterPath("Theirs").empty(),
+				"Install: the file is copied to the user's folder, listed and ticked");
+			write(elsewhere, "name: Theirs\ndesc: a newer one\ndef: include\nf: \\.tmp$\n");
+			asked.clear();
+			answer = false;
+			click(&dialog, "installFileFilter");
+			QFile kept(theirsPath);
+			if (!kept.open(QIODevice::ReadOnly))
+				std::exit(2);
+			const bool keptOld = kept.readAll().contains("from elsewhere");
+			kept.close();
+			answer = true;
+			click(&dialog, "installFileFilter");
+			if (!kept.open(QIODevice::ReadOnly))
+				std::exit(2);
+			const bool tookNew = kept.readAll().contains("a newer one");
+			kept.close();
+			check(asked == QStringList{ FiltersDialog::tr("Filter file exists. Overwrite?"),
+					FiltersDialog::tr("Filter file exists. Overwrite?") }
+				&& keptOld && tookNew, "Install: one already there is replaced only on a Yes");
+
+			// Delete...
+			list->setCurrentItem(row(QStringLiteral("mine")));
+			asked.clear();
+			answer = false;
+			click(&dialog, "deleteFileFilter");
+			const bool keptOnNo = QFile::exists(minePath) && row(QStringLiteral("mine")) != nullptr;
+			answer = true;
+			click(&dialog, "deleteFileFilter");
+			check(asked.size() == 2 && asked.first() == FiltersDialog::tr(
+					"Are you sure you want to delete\n\n%1 ?").arg(minePath)
+				&& keptOnNo && !QFile::exists(minePath) && row(QStringLiteral("mine")) == nullptr
+				&& list->topLevelItemCount() == 3
+				&& mask->mask() == QStringLiteral("*.*;pf:Theirs")
+				&& ticked() == QStringList{ QStringLiteral("Theirs") }
+				&& lm::globalFileFilter()->GetFileFilterPath("mine").empty()
+				&& !usable(&dialog, "deleteFileFilter"),
+				"Delete: on a Yes the file goes, with its row and its place in the mask");
+
+			// OK: the mask as it stands, into the history; nothing is "*.*"
+			dialog.accept();
+			check(dialog.result() == QDialog::Accepted
+				&& QString::fromStdString(dialog.fileFilter().GetMaskOrExpression())
+					== QStringLiteral("*.*;pf:Theirs")
+				&& lm::fileFilterHistory().value(0) == QStringLiteral("*.*;pf:Theirs")
+				&& lm::fileFilterMask() == QStringLiteral("*.*"),
+				"OK: the dialog hands the filter over, the caller puts it in use");
+			FiltersDialog empty;
+			empty.findChild<FileFilterCombo *>(QStringLiteral("fileFilterMask"))
+				->setEditText(QStringLiteral("  "));
+			empty.accept();
+			check(QString::fromStdString(empty.fileFilter().GetMaskOrExpression())
+					== QStringLiteral("*.*"), "OK: an empty mask is *.*");
+			QFile::remove(theirsPath);
+			lm::loadFilterFiles(lm::globalFileFilter());
+		}
+
+		// --- folder comparisons go by the filter ---
+		const QString left = dir.filePath(QStringLiteral("L"));
+		const QString right = dir.filePath(QStringLiteral("R"));
+		for (const QString &root : { left, right })
+		{
+			const QByteArray side = root == left ? "left\n" : "right\n";
+			write(root + QStringLiteral("/a.cpp"), side);
+			write(root + QStringLiteral("/b.txt"), side);
+			write(root + QStringLiteral("/sub/c.cpp"), side);
+			write(root + QStringLiteral("/.git/config"), side);
+			write(root + QStringLiteral("/build/out.o"), side);
+			write(root + QStringLiteral("/long.dat"), QByteArray(40, root == left ? 'l' : 'r'));
+		}
+		using Item = lm::FolderCompareItem;
+		const auto skippedWith = [&](const QString &maskText) {
+			lm::setFileFilterMask(maskText);
+			FolderCompareView view;
+			view.start(QStringList{ left, right });
+			waitFor(&view);
+			QStringList skipped;
+			for (const char *name : { "a.cpp", "b.txt", "c.cpp", "sub", ".git", "build",
+					"long.dat" })
+				if (view.rowCategoryForTest(QLatin1String(name)) == Item::Skipped)
+					skipped.append(QLatin1String(name));
+			if (view.fileFilter() != lm::fileFilterMask())
+				skipped.append(QStringLiteral("(pane: ") + view.fileFilter() + QLatin1Char(')'));
+			printf("  %s skips: %s\n", qPrintable(maskText),
+				skipped.isEmpty() ? "nothing" : qPrintable(skipped.join(QStringLiteral(", "))));
+			return skipped;
+		};
+		check(skippedWith(QStringLiteral("*.*")).isEmpty(), "folder: *.* compares everything");
+		check(skippedWith(QStringLiteral("*.cpp"))
+				== QStringList{ QStringLiteral("b.txt"), QStringLiteral("long.dat") },
+			"folder: a mask leaves the other files out");
+		check(skippedWith(QStringLiteral("*.*;!build/")) == QStringList{ QStringLiteral("build") }
+			&& skippedWith(QStringLiteral("*.*;!build\\")) == QStringList{ QStringLiteral("build") },
+			"folder: a folder mask, with either slash");
+		check(skippedWith(QStringLiteral("pf:") + sourceControl)
+				== QStringList{ QStringLiteral(".git") },
+			"folder: a preset filter leaves the version control folder out");
+		check(skippedWith(QStringLiteral("*.*|fe:Size < 20"))
+				== QStringList{ QStringLiteral("long.dat") },
+			"folder: a filter expression is evaluated");
+		lm::setFileFilterMask(QStringLiteral("*.*"));
+
+		// --- the status bar pane and OK in the dialog ---
+		{
+			MainWindow window;
+			window.openFileComparison({ left + QStringLiteral("/a.cpp"),
+				right + QStringLiteral("/a.cpp") });
+			window.openFolderComparison(QStringList{ left, right });
+			settle();
+			auto *tabs = window.findChild<QTabWidget *>();
+			auto *file = window.findChild<FileCompareView *>();
+			auto *folder = window.findChild<FolderCompareView *>();
+			if (tabs == nullptr || file == nullptr || folder == nullptr)
+				return 2;
+			waitFor(folder);
+			auto *pane = folder->findChild<QToolButton *>(QStringLiteral("fileFilterPane"));
+			check(pane != nullptr && pane->text() == QStringLiteral("*.*")
+				&& folder->fileFilter() == QStringLiteral("*.*"),
+				"pane: the folder comparison shows its file filter");
+			if (pane == nullptr)
+				return 1;
+			int fileScans = 0;
+			QObject::connect(file, &FileCompareView::rescanned, [&fileScans]() { ++fileScans; });
+
+			// the dialog is window-modal: edit it and press a button from
+			// inside its event loop
+			const auto answering = [&window](const QString &maskText,
+				QDialogButtonBox::StandardButton pressed)
+			{
+				QTimer::singleShot(0, &window, [&window, maskText, pressed]() {
+					auto *dialog = window.findChild<FiltersDialog *>();
+					auto *buttons = dialog != nullptr
+						? dialog->findChild<QDialogButtonBox *>() : nullptr;
+					if (buttons == nullptr)
+					{
+						printf("no Filters dialog to answer\n");
+						std::exit(3);
+					}
+					dialog->showPage(FiltersDialog::FileFiltersPage);
+					dialog->findChild<FileFilterCombo *>(QStringLiteral("fileFilterMask"))
+						->setEditText(maskText);
+					buttons->button(pressed)->click();
+				});
+			};
+
+			// a click on the pane opens the dialog; a folder comparison in
+			// front asks before refreshing
+			tabs->setCurrentWidget(folder);
+			settle();
+			asked.clear();
+			answer = false;
+			answering(QStringLiteral("*.cpp"), QDialogButtonBox::Ok);
+			pane->click();
+			const bool startedOnNo = folder->isComparingForTest();
+			settle();
+			const QString question = QCoreApplication::translate("MessageBoxes",
+				"Filters updated. Refresh all open folder compares?\n\n"
+				"Select 'No' to refresh later.");
+			check(asked == QStringList{ question } && !startedOnNo
+				&& lm::fileFilterMask() == QStringLiteral("*.cpp")
+				&& QSettings().value(settingsKey).toString() == QStringLiteral("*.cpp")
+				&& folder->fileFilter() == QStringLiteral("*.*"),
+				"pane click, a new mask, No: saved, the comparison refreshed later");
+
+			asked.clear();
+			answer = true;
+			answering(QStringLiteral("*.txt"), QDialogButtonBox::Ok);
+			pane->click();
+			const bool startedOnYes = folder->isComparingForTest();
+			waitFor(folder);
+			settle();
+			check(asked == QStringList{ question } && startedOnYes
+				&& folder->fileFilter() == QStringLiteral("*.txt") && pane->text() == QStringLiteral("*.txt")
+				&& folder->rowCategoryForTest(QStringLiteral("a.cpp")) == Item::Skipped
+				&& folder->rowCategoryForTest(QStringLiteral("b.txt")) == Item::Different,
+				"a new mask, Yes: the folder comparison is refreshed with it");
+
+			asked.clear();
+			answering(QStringLiteral("*.txt"), QDialogButtonBox::Ok);
+			pane->click();
+			const bool startedUnchanged = folder->isComparingForTest();
+			settle();
+			answering(QStringLiteral("*.h"), QDialogButtonBox::Cancel);
+			pane->click();
+			settle();
+			check(asked.isEmpty() && !startedUnchanged
+				&& lm::fileFilterMask() == QStringLiteral("*.txt"),
+				"the same mask, or Cancel: nothing asked, nothing changed");
+
+			// a text comparison in front: the mask is saved, nothing rescans
+			tabs->setCurrentWidget(file);
+			settle();
+			answering(QStringLiteral("*.*"), QDialogButtonBox::Ok);
+			QMetaObject::invokeMethod(&window, "showFilters");
+			const bool startedFromText = folder->isComparingForTest();
+			settle();
+			check(asked.isEmpty() && !startedFromText && fileScans == 0
+				&& lm::fileFilterMask() == QStringLiteral("*.*")
+				&& folder->fileFilter() == QStringLiteral("*.txt"),
+				"text in front: a new mask is only saved");
+		}
+
+		// --- the selection screen's "Folder: Filter" field ---
+		{
+			QSettings().setValue(QStringLiteral("General/VerifyOpenPaths"), true);
+			lm::setFileFilterMask(QStringLiteral("*.cpp;*.h"));
+			MainWindow window;
+			window.openSelector({});
+			settle();
+			auto *selector = window.findChild<NewComparisonView *>();
+			FileFilterCombo *field = selector != nullptr ? selector->filterFieldForTest() : nullptr;
+			auto *select = selector != nullptr
+				? selector->findChild<QToolButton *>(QStringLiteral("selectFilter")) : nullptr;
+			if (field == nullptr || select == nullptr)
+				return 2;
+			QStringList titles;
+			for (const QLabel *label : selector->findChildren<QLabel *>())
+				titles.append(label->text());
+			check(titles.contains(NewComparisonView::tr("Folder: Filter"))
+				&& select->text() == NewComparisonView::tr("Select...")
+				&& field->mask() == QStringLiteral("*.cpp;*.h")
+				&& field->itemText(0) == QStringLiteral("*.cpp;*.h"),
+				"selection: the field shows the filter in use");
+			check(field->lineEdit()->placeholderText() == NewComparisonView::tr("e.g. %1")
+					.arg(QStringLiteral("*.txt|fe:Size > 100KB")),
+				"selection: WinMerge's example while the field is empty");
+			const QString shots = qEnvironmentVariable("MERGEDESK_SELFTEST_SHOTS");
+			if (!shots.isEmpty())
+			{
+				// the example, with the field emptied for a moment
+				window.resize(1100, 700);
+				window.show();
+				field->lineEdit()->clear();
+				settle();
+				window.grab().save(shots + QStringLiteral("/selection-filter-example.png"));
+				field->setMask(QStringLiteral("*.cpp;*.h"), false);
+				settle();
+			}
+
+			// shown while it may be a folder comparison, usable once it is
+			const auto state = [&](const QStringList &paths) {
+				MainWindow other;
+				other.show();
+				other.openSelector(paths);
+				auto *screen = other.findChild<NewComparisonView *>();
+				screen->verifyPathsForTest();
+				FileFilterCombo *combo = screen->filterFieldForTest();
+				return QStringLiteral("%1%2").arg(combo->isVisibleTo(screen) ? "shown" : "hidden",
+					combo->isEnabled() ? "+usable" : "");
+			};
+			const QString aFile = left + QStringLiteral("/a.cpp");
+			check(state({}) == QStringLiteral("shown")
+				&& state({ aFile, right + QStringLiteral("/a.cpp") }) == QStringLiteral("hidden")
+				&& state({ left, right }) == QStringLiteral("shown+usable")
+				&& state({ left }) == QStringLiteral("shown+usable"),
+				"selection: the field follows the kind of the paths");
+			QSettings().setValue(QStringLiteral("General/VerifyOpenPaths"), false);
+			check(state({ aFile, right + QStringLiteral("/a.cpp") })
+					== QStringLiteral("shown+usable"),
+				"selection: always there when the paths are not verified");
+			QSettings().setValue(QStringLiteral("General/VerifyOpenPaths"), true);
+
+			// what does not parse is marked, with the presets at hand
+			type(field, QStringLiteral("pf:No such filter"));
+			const int unknownPreset = static_cast<int>(field->errors().size());
+			type(field, QStringLiteral("pf:") + sourceControl);
+			check(unknownPreset == 1 && field->errors().isEmpty(),
+				"selection: the field checks what is typed");
+
+			// Select...: usable with a folder among the paths; the dialog,
+			// and its filter back in the field
+			const bool selectNeedsFolder = !select->isEnabled();
+			selector->addPaths({ left, right });
+			selector->verifyPathsForTest();
+			const bool selectUsable = select->isEnabled();
+			QTimer::singleShot(0, &window, [&window]() {
+				auto *dialog = window.findChild<FiltersDialog *>();
+				if (dialog == nullptr)
+				{
+					printf("no Filters dialog to answer\n");
+					std::exit(3);
+				}
+				dialog->showPage(FiltersDialog::FileFiltersPage);
+				dialog->findChild<FileFilterCombo *>(QStringLiteral("fileFilterMask"))
+					->setEditText(QStringLiteral("*.md"));
+				dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+			});
+			select->click();
+			settle();
+			check(selectNeedsFolder && selectUsable && field->mask() == QStringLiteral("*.md")
+				&& lm::fileFilterMask() == QStringLiteral("*.md"),
+				"selection: Select... opens Filters and takes its filter");
+
+			// Compare: the field's filter is in use from then on
+			field->setEditText(QStringLiteral(" *.txt "));
+			QPushButton *compare = nullptr;
+			for (QPushButton *candidate : selector->findChildren<QPushButton *>())
+				if (candidate->text() == NewComparisonView::tr("Compare"))
+					compare = candidate;
+			if (compare == nullptr)
+				return 2;
+			compare->click();
+			settle();
+			auto *folder = window.findChild<FolderCompareView *>();
+			waitFor(folder);
+			settle();
+			check(folder != nullptr && lm::fileFilterMask() == QStringLiteral("*.txt")
+				&& QSettings().value(settingsKey).toString() == QStringLiteral("*.txt")
+				&& lm::fileFilterHistory().value(0) == QStringLiteral("*.txt")
+				&& folder->fileFilter() == QStringLiteral("*.txt")
+				&& folder->rowCategoryForTest(QStringLiteral("a.cpp")) == Item::Skipped,
+				"selection: Compare puts the field's filter in use");
+		}
+
+		lm::setFileFilterMask(QStringLiteral("*.*"));
+		lm::setFiltersDirsForTest(QString(), QString());
+		lm::setMessageSinkForTest([](const QString &) {});
+		lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+		FiltersDialog::setFileChooserForTest([](bool, const QString &) { return QString(); });
+		FiltersDialog::setEditorForTest([](const QString &) {});
+		printf("file filters: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFilterMenuOpt))
+	{
+		// WinMerge's file filter helper menu (the "=" button, the arrow of
+		// "Select..."): its items, the masks and conditions they make, the
+		// Filter Condition dialog, and that the engine takes what they make
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 3; ++i)
+				QCoreApplication::processEvents();
+		};
+		using Menu = FileFilterMenu;
+		QWidget host;
+		Menu menu(&host);
+		QStringList chosen;
+		int reopened = 0;
+		QObject::connect(&menu, &Menu::maskChosen, [&chosen](const QString &mask) {
+			chosen.append(mask);
+		});
+		QObject::connect(&menu, &Menu::reopenRequested, [&reopened]() { ++reopened; });
+		const auto made = [&menu](int command, const QString &masks = QStringLiteral("*.*")) {
+			return menu.apply(command, masks).value_or(QStringLiteral("(nothing)"));
+		};
+		const auto label = [](const QAction *action) {
+			return action->isSeparator() ? QStringLiteral("-") : action->text();
+		};
+
+		// --- the items ---
+		{
+			QStringList top;
+			for (const QAction *action : menu.actions())
+				top.append(label(action));
+			const auto t = [](const char *text) {
+				return QCoreApplication::translate("FileFilterMenu", text);
+			};
+			check(top == QStringList{ t("&Clear All"), t("Remove Last Filter &Group"),
+					t("R&eset to Default (*.*)"), t("Add E&xclude File"), t("Add Excl&ude Folder"),
+					QStringLiteral("-"), t("Add &File Condition"), t("Add F&older Condition"),
+					t("Target: &Any (Left/Middle/Right)"), t("Target: &Left"),
+					t("Target: &Middle"), t("Target: &Right"), QStringLiteral("-"),
+					t("Add &Difference Condition"), t("Target: &Left and Right"),
+					t("Target: Left and &Middle"), t("Target: Middle and &Right"),
+					t("Target: &All") },
+				"menu: upstream's items, in its order");
+			int leaves = 0;
+			for (const QAction *action : menu.findChildren<QAction *>())
+				if (action->menu() == nullptr && !action->isSeparator()
+					&& action->data().isValid())
+					++leaves;
+			const int submenus = static_cast<int>(menu.findChildren<QMenu *>().size());
+			printf("  %d items in %d submenus\n", leaves, submenus);
+			// upstream has 162, two of them "Additional Properties..."
+			check(leaves == 160 && submenus == 27, "menu: every item but the Windows properties");
+		}
+
+		// --- what the items make of a mask ---
+		check(made(Menu::MaskClear).isEmpty() && made(Menu::MaskAll, QStringLiteral("a;b")) == QStringLiteral("*.*")
+			&& made(Menu::MaskRemoveLast, QStringLiteral("a|b|c")) == QStringLiteral("a|b")
+			&& made(Menu::MaskRemoveLast, QStringLiteral("a")).isEmpty(),
+			"mask: clear, reset, remove the last group");
+		check(made(Menu::FileBackup, QStringLiteral("*.cpp"))
+				== QStringLiteral("*.cpp;!*.bak;!*.old;!*.orig;!*.swp;!*.swo;!*.tmp;!*.temp;!*.save;!*.backup;!*.*~")
+			&& made(Menu::FolderVcs, QString()) == QStringLiteral("!.git\\;!.svn\\;!.hg\\")
+			&& made(Menu::FileLog) == QStringLiteral("*.*;!*.log;!*.out;!*.err;!*.trace"),
+			"mask: ready-made exclusions join the group in use");
+		check(made(Menu::SizeFirst) == QStringLiteral("*.*|fe:Size < 1KB")
+			&& made(Menu::SizeLast, QString()) == QStringLiteral("fe:Size >= 1GB")
+			&& made(Menu::DateFirst + 3) == QStringLiteral("*.*|fe:Date >= today()")
+			&& made(Menu::DateLast) == QStringLiteral(
+				"*.*|fe:Date >= startOfYear(startOfYear(now()) - 1day)")
+			&& made(Menu::AttrFirst + 2) == QStringLiteral("*.*|fe:AttrStr contains \"H\"")
+			&& made(Menu::LinesFirst) == QStringLiteral("*.*|fe:lineCount(Content) < 10"),
+			"file conditions: a group of their own");
+		check(made(Menu::FolderDateFirst) == QStringLiteral("*.*|de:Date < now() - 1hour")
+			&& made(Menu::FolderFilesFirst) == QStringLiteral("*.*|de:Files == 0")
+			&& made(Menu::FolderItemsLast) == QStringLiteral("*.*|de:Items >= 1")
+			&& made(Menu::FolderTotalSizeFirst) == QStringLiteral("*.*|de:TotalSize < 1KB"),
+			"folder conditions");
+		check(made(Menu::DiffSizeFirst + 1) == QStringLiteral("*.*|fe:LeftSize != RightSize")
+			&& made(Menu::DiffSizeLast) == QStringLiteral("*.*|fe:abs(LeftSize - RightSize) >= 1KB")
+			&& made(Menu::DiffDateFirst + 6) == QStringLiteral(
+				"*.*|fe:abs(LeftDate - RightDate) < 1second")
+			&& made(Menu::DiffAttrEqual) == QStringLiteral("*.*|fe:LeftAttrStr = RightAttrStr"),
+			"difference conditions");
+
+		// --- the targets and Recursive: ticked, and the menu comes back ---
+		menu.pickForTest(Menu::ConditionLeft);
+		const bool leftTicked = menu.actionForTest(Menu::ConditionLeft)->isChecked()
+			&& !menu.actionForTest(Menu::ConditionAny)->isChecked();
+		const QString leftSize = made(Menu::SizeFirst);
+		const QString leftFolder = made(Menu::FolderFilesFirst);
+		menu.pickForTest(Menu::FolderStatsRecursive);
+		const QString recursive = made(Menu::FolderTotalSizeFirst);
+		menu.pickForTest(Menu::FolderStatsRecursive);
+		menu.pickForTest(Menu::ConditionAny);
+		check(leftTicked && reopened == 4 && chosen.isEmpty()
+			&& leftSize == QStringLiteral("*.*|fe:LeftSize < 1KB")
+			&& leftFolder == QStringLiteral("*.*|de:LeftFiles == 0")
+			&& recursive == QStringLiteral("*.*|de:LeftRecursiveTotalSize < 1KB")
+			&& made(Menu::FolderTotalSizeFirst) == QStringLiteral("*.*|de:TotalSize < 1KB"),
+			"targets: the side goes into the condition, Recursive into the folder's");
+		menu.pickForTest(Menu::ConditionDiffLeftMiddle);
+		const QString leftMiddle = made(Menu::DiffSizeFirst);
+		const bool comparisonsShown = menu.actionForTest(Menu::DiffSizeLess)->isVisible()
+			&& menu.actionForTest(Menu::DiffDateRange)->isVisible();
+		menu.pickForTest(Menu::ConditionDiffAll);
+		const bool onlyEquality = menu.actionForTest(Menu::DiffSizeFirst)->isVisible()
+			&& menu.actionForTest(Menu::DiffSizeFirst + 1)->isVisible()
+			&& !menu.actionForTest(Menu::DiffSizeLess)->isVisible()
+			&& !menu.actionForTest(Menu::DiffSizeRange)->isVisible()
+			&& !menu.actionForTest(Menu::DiffDateLess)->isVisible()
+			&& !menu.actionForTest(Menu::DiffDateLast)->isVisible()
+			&& menu.actionForTest(Menu::DiffAttrNotEqual)->isVisible();
+		const QString allSides = made(Menu::DiffSizeFirst) + QStringLiteral(" / ")
+			+ made(Menu::DiffDateFirst + 1) + QStringLiteral(" / ") + made(Menu::DiffAttrNotEqual);
+		menu.pickForTest(Menu::ConditionDiffLeftRight);
+		check(leftMiddle == QStringLiteral("*.*|fe:LeftSize = MiddleSize") && comparisonsShown
+			&& onlyEquality && allSides == QStringLiteral("*.*|fe:allequal(Size) / "
+				"*.*|fe:not allequal(Date) / *.*|fe:not allequal(AttrStr)"),
+			"difference targets: a pair of sides, or all of them alike");
+
+		// --- every item that needs no dialog makes something the engine parses ---
+		{
+			auto helper = lm::cloneFileFilter();
+			QStringList bad;
+			int parsed = 0;
+			for (int side = 0; side < 4; ++side)
+			{
+				menu.pickForTest(Menu::ConditionAny + side);
+				menu.pickForTest(Menu::ConditionDiffLeftRight + side);
+				for (const QAction *action : menu.findChildren<QAction *>())
+				{
+					if (action->menu() != nullptr || action->isSeparator()
+						|| !action->data().isValid() || !action->isVisible())
+						continue;
+					const int command = action->data().toInt();
+					const bool asks = command == Menu::SizeRange || command == Menu::DateRange
+						|| command == Menu::LinesRange || command == Menu::FolderDateRange
+						|| command == Menu::FolderFilesRange || command == Menu::FolderItemsRange
+						|| command == Menu::FolderTotalSizeRange || command == Menu::DiffSizeRange
+						|| command == Menu::DiffDateRange
+						|| (command >= Menu::ContentFirst && command <= Menu::ContentLast);
+					const bool state = command == Menu::FolderStatsRecursive
+						|| (command >= Menu::ConditionAny && command <= Menu::ConditionRight)
+						|| (command >= Menu::ConditionDiffLeftRight
+							&& command <= Menu::ConditionDiffAll);
+					if (asks || state)
+						continue;
+					const QString mask = made(command);
+					++parsed;
+					const QStringList errors = lm::fileFilterErrors(helper.get(), mask);
+					if (!errors.isEmpty())
+						bad.append(mask + QStringLiteral(" -> ") + errors.join(QStringLiteral("; ")));
+				}
+			}
+			menu.pickForTest(Menu::ConditionAny);
+			menu.pickForTest(Menu::ConditionDiffLeftRight);
+			printf("  %d masks parsed\n", parsed);
+			for (const QString &line : bad)
+				printf("  does not parse: %s\n", qPrintable(line));
+			check(bad.isEmpty() && parsed > 500, "engine: every ready-made condition parses");
+		}
+
+		// --- the Filter Condition dialog ---
+		chosen.clear();
+		const auto asking = [&host](std::function<void(FilterConditionDialog *)> body, bool accept)
+		{
+			QTimer::singleShot(0, &host, [&host, body, accept]() {
+				auto *dialog = host.findChild<FilterConditionDialog *>();
+				if (dialog == nullptr)
+				{
+					printf("no Filter Condition dialog\n");
+					std::exit(3);
+				}
+				if (body)
+					body(dialog);
+				if (accept)
+					dialog->accept();
+				else
+					dialog->reject();
+			});
+		};
+		const auto part = [](FilterConditionDialog *dialog, const char *name) {
+			return dialog->findChild<QWidget *>(QLatin1String(name));
+		};
+		const auto combo = [&part](FilterConditionDialog *dialog, const char *name) {
+			return qobject_cast<QComboBox *>(part(dialog, name));
+		};
+		const auto shownText = [&part](FilterConditionDialog *dialog, const char *name) {
+			const auto *text = qobject_cast<QLabel *>(part(dialog, name));
+			return text != nullptr ? text->text() : QString();
+		};
+		const auto pickOperator = [&combo](FilterConditionDialog *dialog, const QString &pattern) {
+			QComboBox *operators = combo(dialog, "conditionOperator");
+			operators->setCurrentIndex(operators->findData(pattern));
+		};
+		QString seen;
+
+		asking([&](FilterConditionDialog *dialog) {
+			QComboBox *operators = combo(dialog, "conditionOperator");
+			QStringList names;
+			for (int i = 0; i < operators->count(); ++i)
+				names.append(operators->itemText(i));
+			seen = shownText(dialog, "conditionLhs") + QStringLiteral(" | ")
+				+ operators->currentText() + QStringLiteral(" | ")
+				+ QString::number(names.size()) + QStringLiteral(" | ")
+				+ shownText(dialog, "conditionExpression") + QStringLiteral(" | second ")
+				+ (combo(dialog, "conditionValue2")->isVisibleTo(dialog) ? "shown" : "hidden")
+				+ QStringLiteral(" | case ")
+				+ (part(dialog, "conditionMatchCase")->isVisibleTo(dialog) ? "shown" : "hidden");
+			pickOperator(dialog, QStringLiteral("isWithin(%1, %2, %3)"));
+			seen += QStringLiteral(" | second ")
+				+ (combo(dialog, "conditionValue2")->isVisibleTo(dialog) ? "shown" : "hidden");
+			combo(dialog, "conditionValue1")->setEditText(QStringLiteral("1KB"));
+			combo(dialog, "conditionValue2")->setEditText(QStringLiteral("1MB"));
+		}, true);
+		menu.pickForTest(Menu::SizeRange);
+		printf("  size range: %s\n", qPrintable(seen));
+		check(seen == QStringLiteral("Size | ") + FilterConditionDialog::tr("Equals")
+				+ QStringLiteral(" | 8 | Size = 0B | second hidden | case hidden | second shown")
+			&& chosen == QStringList{ QStringLiteral("fe:isWithin(Size, 1KB, 1MB)") },
+			"condition: a size, its operators, a range between two values");
+
+		chosen.clear();
+		asking([&](FilterConditionDialog *dialog) {
+			seen = shownText(dialog, "conditionLhs") + QStringLiteral(" | ")
+				+ combo(dialog, "conditionOperator")->currentData().toString()
+				+ QStringLiteral(" | ") + QString::number(combo(dialog, "conditionOperator")->count())
+				+ QStringLiteral(" | case ")
+				+ (part(dialog, "conditionMatchCase")->isVisibleTo(dialog) ? "shown" : "hidden");
+			combo(dialog, "conditionValue1")->setEditText(QStringLiteral("say \"hi\""));
+			qobject_cast<QCheckBox *>(part(dialog, "conditionMatchCase"))->setChecked(true);
+		}, true);
+		menu.pickForTest(Menu::ContentFirst + 3);
+		check(seen == QStringLiteral("sublines(Content, 0, 1) | %1 not contains %2 | 4 | case shown")
+			&& chosen == QStringList{ QStringLiteral(
+				"fe:@cs sublines(Content, 0, 1) not contains \"say \"\"hi\"\"\"") },
+			"condition: text in the content, quoted, case sensitive on request");
+
+		chosen.clear();
+		asking([&](FilterConditionDialog *dialog) {
+			seen = shownText(dialog, "conditionLhs") + QStringLiteral(" | ")
+				+ combo(dialog, "conditionOperator")->currentData().toString();
+			combo(dialog, "conditionValue1")->setEditText(QStringLiteral("100"));
+		}, true);
+		menu.pickForTest(Menu::LinesRange);
+		check(seen == QStringLiteral("lineCount(Content) | %1 > %2")
+			&& chosen == QStringList{ QStringLiteral("fe:lineCount(Content) > 100") },
+			"condition: a line count");
+
+		chosen.clear();
+		asking([&](FilterConditionDialog *dialog) {
+			auto *date = qobject_cast<QDateTimeEdit *>(part(dialog, "conditionDate1"));
+			seen = QStringLiteral("date ") + (date->isVisibleTo(dialog) ? "shown" : "hidden")
+				+ QStringLiteral(" | value ")
+				+ (combo(dialog, "conditionValue1")->isVisibleTo(dialog) ? "shown" : "hidden");
+			date->setDate(QDate(2026, 1, 15));
+			pickOperator(dialog, QStringLiteral("%1 >= %2"));
+		}, true);
+		menu.pickForTest(Menu::DateRange);
+		check(seen == QStringLiteral("date shown | value hidden")
+			&& chosen == QStringList{ QStringLiteral("fe:DateStr >= \"2026-01-15\"") },
+			"condition: a date, picked");
+
+		chosen.clear();
+		menu.pickForTest(Menu::FolderStatsRecursive);
+		asking([&](FilterConditionDialog *dialog) {
+			combo(dialog, "conditionValue1")->setEditText(QStringLiteral("10"));
+			pickOperator(dialog, QStringLiteral("%1 < %2"));
+		}, true);
+		menu.pickForTest(Menu::FolderFilesRange);
+		menu.pickForTest(Menu::FolderStatsRecursive);
+		check(chosen == QStringList{ QStringLiteral("de:RecursiveFiles < 10") },
+			"condition: a folder's files, subfolders included");
+
+		chosen.clear();
+		asking([&](FilterConditionDialog *dialog) {
+			QComboBox *values = combo(dialog, "conditionValue1");
+			seen = shownText(dialog, "conditionLhs") + QStringLiteral(" | ")
+				+ QString::number(combo(dialog, "conditionOperator")->count())
+				+ QStringLiteral(" | ") + values->currentText() + QStringLiteral(" | ")
+				+ values->itemText(values->count() - 1);
+			pickOperator(dialog, QStringLiteral("%1 < %2"));
+			values->setEditText(QStringLiteral("1hour"));
+		}, true);
+		menu.pickForTest(Menu::DiffDateRange);
+		check(seen == QStringLiteral("abs(LeftDate - RightDate) | 8 | 0second | 1week")
+			&& chosen == QStringList{ QStringLiteral("fe:abs(LeftDate - RightDate) < 1hour") },
+			"condition: the time between two dates");
+
+		chosen.clear();
+		asking({}, false);
+		menu.pickForTest(Menu::SizeRange);
+		check(chosen.isEmpty(), "condition: Cancel adds nothing");
+		{
+			auto helper = lm::cloneFileFilter();
+			const QStringList conditions = { QStringLiteral("*.*|fe:isWithin(Size, 1KB, 1MB)"),
+				QStringLiteral("*.*|fe:@cs sublines(Content, 0, 1) not contains \"say \"\"hi\"\"\""),
+				QStringLiteral("*.*|fe:lineCount(Content) > 100"),
+				QStringLiteral("*.*|fe:DateStr >= \"2026-01-15\""),
+				QStringLiteral("*.*|de:RecursiveFiles < 10"),
+				QStringLiteral("*.*|fe:abs(LeftDate - RightDate) < 1hour") };
+			QStringList bad;
+			for (const QString &mask : conditions)
+				if (!lm::fileFilterErrors(helper.get(), mask).isEmpty())
+					bad.append(mask);
+			for (const QString &mask : bad)
+				printf("  does not parse: %s\n", qPrintable(mask));
+			check(bad.isEmpty(), "engine: what the dialog builds parses");
+		}
+
+		// --- the engine goes by what the menu makes ---
+		const QString left = dir.filePath(QStringLiteral("L"));
+		const QString right = dir.filePath(QStringLiteral("R"));
+		const QDateTime longAgo(QDate(2020, 5, 1), QTime(12, 0));
+		const auto put = [](const QString &path, const QByteArray &bytes,
+			const QDateTime &when = QDateTime())
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+			f.flush();
+			if (when.isValid())
+				f.setFileTime(when, QFileDevice::FileModificationTime);
+		};
+		for (const QString &root : { left, right })
+		{
+			const bool isLeft = root == left;
+			put(root + QStringLiteral("/small.txt"), isLeft ? "left\n" : "right\n");
+			put(root + QStringLiteral("/big.txt"), QByteArray(5000, isLeft ? 'l' : 'r'));
+			put(root + QStringLiteral("/old.txt"), isLeft ? "left\n" : "right\n", longAgo);
+			put(root + QStringLiteral("/.hidden"), isLeft ? "left\n" : "right\n");
+			put(root + QStringLiteral("/locked.txt"), isLeft ? "left\n" : "right\n");
+			QFile::setPermissions(root + QStringLiteral("/locked.txt"),
+				QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther);
+			put(root + QStringLiteral("/needle.txt"),
+				isLeft ? "a needle here\nleft\n" : "a needle here\nright\n");
+			put(root + QStringLiteral("/long.txt"),
+				QByteArray(isLeft ? "left line\n" : "right line\n").repeated(40));
+			// the same size on both sides, another length on the right
+			put(root + QStringLiteral("/grown.txt"), isLeft ? "12345\n" : "123456789\n");
+			// the right one last touched long ago
+			put(root + QStringLiteral("/stale.txt"), isLeft ? "left\n" : "right\n",
+				isLeft ? QDateTime() : longAgo);
+			put(root + QStringLiteral("/full/one.txt"), isLeft ? "left\n" : "right\n");
+			put(root + QStringLiteral("/heavy/load.txt"), QByteArray(5000, isLeft ? 'l' : 'r'));
+			QDir().mkpath(root + QStringLiteral("/empty"));
+		}
+		using Item = lm::FolderCompareItem;
+		const QStringList names = { QStringLiteral("small.txt"), QStringLiteral("big.txt"),
+			QStringLiteral("old.txt"), QStringLiteral(".hidden"), QStringLiteral("locked.txt"),
+			QStringLiteral("needle.txt"), QStringLiteral("long.txt"), QStringLiteral("grown.txt"),
+			QStringLiteral("stale.txt"), QStringLiteral("full"), QStringLiteral("heavy"),
+			QStringLiteral("empty") };
+		const auto kept = [&](const QString &maskText) {
+			lm::setFileFilterMask(maskText);
+			FolderCompareView view;
+			view.start(QStringList{ left, right });
+			for (int i = 0; i < 400 && view.isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+			QStringList compared;
+			for (const QString &name : names)
+			{
+				const int category = view.rowCategoryForTest(name);
+				if (category >= 0 && category != Item::Skipped)
+					compared.append(name);
+			}
+			printf("  %s keeps: %s\n", qPrintable(maskText),
+				qPrintable(compared.join(QLatin1Char(' '))));
+			return compared;
+		};
+		const auto without = [&names](const QStringList &dropped) {
+			QStringList rest = names;
+			for (const QString &name : dropped)
+				rest.removeAll(name);
+			return rest;
+		};
+		check(kept(QStringLiteral("*.*")) == names, "engine: everything by default");
+		check(kept(made(Menu::SizeFirst)) == without({ QStringLiteral("big.txt") }),
+			"engine: File Size, less than 1KB");
+		check(kept(made(Menu::DateFirst + 3))
+				== without({ QStringLiteral("old.txt") }),
+			"engine: Last Modified, today");
+		check(kept(made(Menu::AttrFirst + 3)) == without({ QStringLiteral(".hidden") })
+			&& kept(made(Menu::AttrFirst + 1)) == without({ QStringLiteral("locked.txt") }),
+			"engine: Attributes, not hidden and not read-only");
+		check(kept(QStringLiteral("*.*|fe:Content contains \"needle\""))
+				== QStringList{ QStringLiteral("needle.txt"), QStringLiteral("full"),
+					QStringLiteral("heavy"), QStringLiteral("empty") },
+			"engine: File Content, contains");
+		check(kept(made(Menu::LinesFirst + 1))
+				== QStringList{ QStringLiteral("long.txt"), QStringLiteral("full"),
+					QStringLiteral("heavy"), QStringLiteral("empty") },
+			"engine: Line Count, 10 or more");
+		check(kept(made(Menu::FolderFilesLast)) == without({ QStringLiteral("empty") }),
+			"engine: a folder's Files, 1 file or more");
+		check(kept(made(Menu::FolderTotalSizeFirst + 1))
+				== without({ QStringLiteral("full"), QStringLiteral("empty") }),
+			"engine: a folder's Total Size, 1KB or more");
+		// (the two sides' texts differ in length by a byte; big.txt alone is
+		// the same size on both, grown.txt alone differs by more)
+		check(kept(made(Menu::DiffSizeFirst + 1)) == without({ QStringLiteral("big.txt") })
+			&& kept(made(Menu::DiffSizeFirst + 7))
+				== QStringList{ QStringLiteral("long.txt"), QStringLiteral("full"),
+					QStringLiteral("heavy"), QStringLiteral("empty") },
+			"engine: difference in File Size, not equal, and by 10 bytes or more");
+		check(kept(made(Menu::DiffDateFirst + 13))
+				== QStringList{ QStringLiteral("stale.txt"), QStringLiteral("full"),
+					QStringLiteral("heavy"), QStringLiteral("empty") },
+			"engine: difference in Last Modified, 1 day or more");
+		check(kept(made(Menu::FolderBuild, made(Menu::FolderVcs))) == names
+			&& kept(QStringLiteral("*.*;!full\\;!heavy\\"))
+				== without({ QStringLiteral("full"), QStringLiteral("heavy") }),
+			"engine: ready-made folder exclusions");
+		lm::setFileFilterMask(QStringLiteral("*.*"));
+		for (const QString &root : { left, right })
+			QFile::setPermissions(root + QStringLiteral("/locked.txt"),
+				QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+
+		// --- where the menu lives ---
+		{
+			FiltersDialog dialog;
+			dialog.showPage(FiltersDialog::FileFiltersPage);
+			auto *maskButton = dialog.findChild<QToolButton *>(QStringLiteral("fileFilterMaskMenu"));
+			auto *pageMenu = dialog.findChild<FileFilterMenu *>();
+			auto *mask = dialog.findChild<FileFilterCombo *>(QStringLiteral("fileFilterMask"));
+			if (maskButton == nullptr || pageMenu == nullptr || mask == nullptr)
+				return 1;
+			mask->setEditText(QStringLiteral("*.cpp"));
+			pageMenu->pickForTest(Menu::FileBackup);
+			const QString afterNames = mask->mask();
+			pageMenu->pickForTest(Menu::SizeFirst);
+			const QString afterCondition = mask->mask();
+			pageMenu->pickForTest(Menu::MaskRemoveLast);
+			const QString afterRemove = mask->mask();
+			pageMenu->pickForTest(Menu::MaskAll);
+			check(maskButton->text() == QStringLiteral("=")
+				&& afterNames.startsWith(QStringLiteral("*.cpp;!*.bak;"))
+				&& afterCondition == afterNames + QStringLiteral("|fe:Size < 1KB")
+				&& afterRemove == afterNames && mask->mask() == QStringLiteral("*.*")
+				&& mask->errors().isEmpty(),
+				"File Filters page: the \"=\" button's menu changes the mask");
+
+			MainWindow window;
+			window.openSelector({ left, right });
+			settle();
+			auto *selector = window.findChild<NewComparisonView *>();
+			auto *select = selector != nullptr
+				? selector->findChild<QToolButton *>(QStringLiteral("selectFilter")) : nullptr;
+			auto *selectMenu = selector != nullptr
+				? selector->findChild<FileFilterMenu *>() : nullptr;
+			if (select == nullptr || selectMenu == nullptr)
+				return 1;
+			selector->verifyPathsForTest();
+			FileFilterCombo *field = selector->filterFieldForTest();
+			field->setEditText(QStringLiteral("*.h"));
+			selectMenu->pickForTest(Menu::FolderVcs);
+			check(select->menu() == selectMenu
+				&& select->popupMode() == QToolButton::MenuButtonPopup
+				&& field->mask() == QStringLiteral("*.h;!.git\\;!.svn\\;!.hg\\"),
+				"selection screen: the arrow of Select... opens the same menu");
+		}
+
+		printf("filter menu: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestDisplayFilterOpt))
+	{
+		// WinMerge's display filter of the folder window: the filter bar,
+		// what its filter hides in the tree and in the flat list without
+		// comparing again, the header menu's "Filter by This Column", the
+		// Filter by Comparison Result dialog, and the engine's items kept
+		// in step with copies, deletes and saves
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 3; ++i)
+				QCoreApplication::processEvents();
+			// a closed bar is deleted later
+			QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+		};
+		const auto waitFor = [](const FolderCompareView *view)
+		{
+			for (int i = 0; view != nullptr && i < 400 && view->isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+		using Menu = FileFilterMenu;
+		const QString shots = qEnvironmentVariable("MERGEDESK_SELFTEST_SHOTS");
+		const QString language = qEnvironmentVariable("MERGEDESK_LANGUAGE", QStringLiteral("en"));
+		const auto shoot = [&shots, &language](QWidget *widget, const char *name)
+		{
+			if (!shots.isEmpty())
+				widget->grab().save(QStringLiteral("%1/df-%2-%3.png").arg(shots, language,
+					QLatin1String(name)));
+		};
+
+		// --- two folders: files alike and not, in folders with and without
+		// folders of their own ---
+		const QString left = dir.filePath(QStringLiteral("left"));
+		const QString right = dir.filePath(QStringLiteral("right"));
+		const auto both = [&](const char *relative, const QByteArray &l, const QByteArray &r)
+		{
+			write(left + QLatin1Char('/') + QLatin1String(relative), l);
+			write(right + QLatin1Char('/') + QLatin1String(relative), r);
+		};
+		both("same.txt", "same\n", "same\n");
+		both("diff.txt", "one\n", "two\n");
+		both("big.txt", QByteArray(2000, 'a'), QByteArray(2000, 'b'));
+		both("note.md", "note\n", "note\n");
+		write(left + QStringLiteral("/onlyL.txt"), "left\n");
+		write(right + QStringLiteral("/onlyR.txt"), "right\n");
+		both("sub/subsame.txt", "s\n", "s\n");
+		both("sub/subdiff.md", "1\n", "2\n");
+		both("sub/deep/deepsame.txt", "d\n", "d\n");
+		both("build/out.txt", "o\n", "o\n");
+		both("lib/liba.txt", "a\n", "a\n");
+		both("lib/inner/innerb.txt", "b\n", "b\n");
+		const QStringList files{ QStringLiteral("same.txt"), QStringLiteral("diff.txt"),
+			QStringLiteral("big.txt"), QStringLiteral("note.md"), QStringLiteral("onlyL.txt"),
+			QStringLiteral("onlyR.txt"), QStringLiteral("subsame.txt"),
+			QStringLiteral("subdiff.md"), QStringLiteral("deepsame.txt"),
+			QStringLiteral("out.txt"), QStringLiteral("liba.txt"), QStringLiteral("innerb.txt") };
+		const QStringList folders{ QStringLiteral("sub"), QStringLiteral("deep"),
+			QStringLiteral("build"), QStringLiteral("lib"), QStringLiteral("inner") };
+		const QStringList every = files + folders;
+		const auto shownOf = [](const FolderCompareView &view, const QStringList &names) {
+			QStringList shown;
+			for (const QString &name : names)
+				if (view.rowShownForTest(name))
+					shown.append(name);
+			return shown;
+		};
+		const auto without = [](QStringList names, const QStringList &dropped) {
+			for (const QString &name : dropped)
+				names.removeAll(name);
+			return names;
+		};
+		const auto say = [](const char *what, const QStringList &names) {
+			printf("  %s: %s\n", what, qPrintable(names.join(QLatin1Char(' '))));
+		};
+		// type a filter in the bar and press Apply
+		const auto apply = [&settle](FolderCompareView &view, const QString &text)
+		{
+			view.showDisplayFilterBar();
+			DisplayFilterBar *bar = view.displayFilterBarForTest();
+			bar->field()->setEditText(text);
+			emit bar->field()->lineEdit()->textEdited(text); // as typed
+			bar->findChild<QPushButton *>(QStringLiteral("displayFilterApply"))->click();
+			settle();
+		};
+		const auto treeAction = [](FolderCompareView &view) -> QAction * {
+			for (QAction *action : view.findChildren<QAction *>())
+				if (action->text() == FolderCompareView::tr("Tree View"))
+					return action;
+			return nullptr;
+		};
+		const QString historyKey = lm::displayFilterHistoryKey();
+		const auto tinted = [](const FileFilterCombo *field, const char *light, const char *dark) {
+			const QString style = field->lineEdit()->styleSheet();
+			return style.contains(QLatin1String(light)) || style.contains(QLatin1String(dark));
+		};
+
+		{
+			FolderCompareView view;
+			view.resize(900, 520);
+			view.start(QStringList{ left, right });
+			waitFor(&view);
+			settle();
+			check(shownOf(view, every) == every && !view.displayFilterBarShown()
+				&& view.displayFilter().isEmpty() && view.hiddenRowsForTest() == 0,
+				"start: every item listed, no bar and no filter");
+
+			// --- the bar ---
+			view.toggleDisplayFilterBar();
+			DisplayFilterBar *bar = view.displayFilterBarForTest();
+			if (bar == nullptr)
+				return 1;
+			auto *applyButton = bar->findChild<QPushButton *>(QStringLiteral("displayFilterApply"));
+			auto *closeButton = bar->findChild<QPushButton *>(QStringLiteral("displayFilterClose"));
+			auto *menuButton = bar->findChild<QToolButton *>(QStringLiteral("displayFilterMaskMenu"));
+			if (applyButton == nullptr || closeButton == nullptr || menuButton == nullptr)
+				return 1;
+			check(view.displayFilterBarShown()
+				&& applyButton->text() == DisplayFilterBar::tr("&Apply")
+				&& closeButton->text() == DisplayFilterBar::tr("&Close")
+				&& menuButton->text() == QStringLiteral("=")
+				&& bar->field()->mask().isEmpty() && bar->field()->count() == 0
+				&& bar->field()->lineEdit()->placeholderText() == DisplayFilterBar::tr("e.g. %1")
+					.arg(QStringLiteral("*.txt|fe:Size > 100KB")),
+				"bar: the field, \"=\", Apply and Close, as upstream's");
+			view.toggleDisplayFilterBar();
+			settle();
+			check(!view.displayFilterBarShown()
+				&& view.findChild<DisplayFilterBar *>() == nullptr,
+				"bar: the View menu item shows it and closes it");
+			view.showDisplayFilterBar();
+			DisplayFilterBar *first = view.displayFilterBarForTest();
+			view.showDisplayFilterBar();
+			check(first != nullptr && view.displayFilterBarForTest() == first,
+				"bar: the shortcut shows it and never closes it");
+
+			// --- Apply: a mask ---
+			apply(view, QStringLiteral("*.txt"));
+			bar = view.displayFilterBarForTest();
+			FileFilterCombo *field = bar->field();
+			say("*.txt shows", shownOf(view, every));
+			check(view.displayFilter() == QStringLiteral("*.txt")
+				&& shownOf(view, every) == without(every, { QStringLiteral("note.md"),
+					QStringLiteral("subdiff.md") })
+				&& view.hiddenRowsForTest() == 2 && !view.isComparingForTest(),
+				"Apply: a mask hides the other items, with nothing compared again");
+			check(field->isApplied() && tinted(field, "#ffffdc", "#3c3c28")
+				&& field->mask() == QStringLiteral("*.txt")
+				&& lm::fileFilterHistory(historyKey) == QStringList{ QStringLiteral("*.txt") }
+				&& lm::fileFilterHistory().isEmpty(),
+				"Apply: the field marks its filter as applied and keeps a history of its own");
+
+			// what the user does to the text takes the mark away; a text
+			// put there from code does not
+			QKeyEvent letter(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier, QStringLiteral("x"));
+			QCoreApplication::sendEvent(field->lineEdit(), &letter);
+			const bool typingClears = !field->isApplied() && !tinted(field, "#ffffdc", "#3c3c28");
+			apply(view, QStringLiteral("*.txt"));
+			field = view.displayFilterBarForTest()->field();
+			const bool appliedAgain = field->isApplied();
+			emit field->activated(0);
+			const bool pickingClears = !field->isApplied();
+			apply(view, QStringLiteral("*.txt"));
+			view.showDisplayFilterBar();
+			field = view.displayFilterBarForTest()->field();
+			check(typingClears && appliedAgain && pickingClears && field->isApplied()
+				&& view.displayFilter() == QStringLiteral("*.txt"),
+				"field: typing or picking from the list clears the mark, the shortcut does not");
+
+			// --- Enter applies, Esc closes; the filter stays in use ---
+			field->setEditText(QStringLiteral("*.md"));
+			QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(field->lineEdit(), &enter);
+			settle();
+			const QStringList markdown = shownOf(view, every);
+			say("*.md shows", markdown);
+			QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+			QCoreApplication::sendEvent(view.displayFilterBarForTest()->field()->lineEdit(), &escape);
+			settle();
+			check(markdown == QStringList{ QStringLiteral("note.md"), QStringLiteral("subdiff.md") }
+					+ folders
+				&& !view.displayFilterBarShown() && view.displayFilter() == QStringLiteral("*.md")
+				&& shownOf(view, every) == markdown,
+				"keys: Enter applies; Esc closes the bar and the filter stays in use");
+
+			// --- a filter expression; one that does not parse ---
+			apply(view, QStringLiteral("fe:Size >= 1KB"));
+			const QStringList large = shownOf(view, every);
+			say("fe:Size >= 1KB shows", large);
+			apply(view, QStringLiteral("fe:Size >="));
+			field = view.displayFilterBarForTest()->field();
+			say("a broken expression shows", shownOf(view, every));
+			printf("  its error: %s\n", qPrintable(field->errors().join(QStringLiteral(" / "))));
+			check(large == QStringList{ QStringLiteral("big.txt") } + folders
+				&& !field->errors().isEmpty() && !field->isApplied()
+				&& tinted(field, "#ffc8c8", "#502828")
+				&& view.displayFilter() == QStringLiteral("fe:Size >="),
+				"Apply: a filter expression; one that does not parse is marked, not applied");
+
+			// --- an empty field takes the filter away ---
+			apply(view, QString());
+			field = view.displayFilterBarForTest()->field();
+			check(view.displayFilter().isEmpty() && shownOf(view, every) == every
+				&& view.hiddenRowsForTest() == 0 && !field->isApplied()
+				&& lm::fileFilterHistory(historyKey) == QStringList{ QStringLiteral("fe:Size >="),
+					QStringLiteral("fe:Size >= 1KB"), QStringLiteral("*.md"),
+					QStringLiteral("*.txt") },
+				"Apply: an empty field shows everything again and leaves the history alone");
+
+			// --- what the field shows when the bar comes up ---
+			view.toggleDisplayFilterBar(); // closes
+			settle();
+			view.toggleDisplayFilterBar(); // the menu item: the list's latest entry
+			const QString fromMenu = view.displayFilterBarForTest()->field()->mask();
+			apply(view, QStringLiteral("*.md"));
+			view.displayFilterBarForTest()->field()->setEditText(QStringLiteral("junk"));
+			view.showDisplayFilterBar(); // the shortcut: the filter in use
+			check(fromMenu == QStringLiteral("fe:Size >=")
+				&& view.displayFilterBarForTest()->field()->mask() == QStringLiteral("*.md"),
+				"field: the list's latest entry from the menu, the filter in use from the shortcut");
+
+			// --- the "=" menu changes the field; Apply is still to be pressed ---
+			bar = view.displayFilterBarForTest();
+			field = bar->field();
+			field->setEditText(QStringLiteral("*.txt"));
+			if (auto *barMenu = qobject_cast<FileFilterMenu *>(bar->menuForTest()))
+				barMenu->pickForTest(Menu::SizeFirst);
+			const QString made = field->mask();
+			const bool notYet = view.displayFilter() == QStringLiteral("*.md") && !field->isApplied();
+			bar->findChild<QPushButton *>(QStringLiteral("displayFilterApply"))->click();
+			settle();
+			const QStringList smallTexts = shownOf(view, every);
+			say("*.txt|fe:Size < 1KB shows", smallTexts);
+			check(made == QStringLiteral("*.txt|fe:Size < 1KB") && notYet
+				&& view.displayFilter() == made
+				&& smallTexts == without(every, { QStringLiteral("big.txt"),
+					QStringLiteral("note.md"), QStringLiteral("subdiff.md") }),
+				"\"=\": its menu puts a condition in the field, for Apply to take");
+			shoot(&view, "bar");
+
+			// --- the filter is the window's: a new comparison keeps it ---
+			view.recompare();
+			waitFor(&view);
+			settle();
+			check(view.displayFilter() == made && shownOf(view, every) == smallTexts,
+				"Refresh: the filter stays for the comparison that follows");
+
+			// --- the applied filter's tint follows the theme, as does the
+			// list it filters ---
+			{
+				const lm::ThemeMode mode = lm::Theme::instance()->mode();
+				const QLineEdit *edit = view.displayFilterBarForTest()->field()->lineEdit();
+				lm::Theme::instance()->setMode(lm::ThemeMode::Light);
+				settle();
+				const bool light = edit->styleSheet().contains(QStringLiteral("#ffffdc"));
+				lm::Theme::instance()->setMode(lm::ThemeMode::Dark);
+				settle();
+				const bool dark = edit->styleSheet().contains(QStringLiteral("#3c3c28"))
+					&& shownOf(view, every) == smallTexts;
+				lm::Theme::instance()->setMode(mode);
+				settle();
+				check(light && dark, "theme: the field's tint and the filtered list follow it");
+			}
+
+			// --- the tree and the flat list go by different rules for a
+			// folder the filter leaves out ---
+			QAction *tree = treeAction(view);
+			if (tree == nullptr)
+				return 1;
+			apply(view, QStringLiteral("!build\\"));
+			const QStringList buildInTree = shownOf(view, every);
+			tree->setChecked(false);
+			settle();
+			const QStringList buildInList = shownOf(view, every);
+			apply(view, QStringLiteral("!lib\\"));
+			const QStringList libInList = shownOf(view, every);
+			say("!build\\ in the tree shows", buildInTree);
+			say("!build\\ in the list shows", buildInList);
+			say("!lib\\ in the list shows", libInList);
+			check(buildInTree == every
+				&& buildInList == without(every, { QStringLiteral("build"), QStringLiteral("out.txt") })
+				&& libInList == every,
+				"folders: left out in the tree only when empty-handed, in the list unless they hold a folder");
+			apply(view, QStringLiteral("*.*|de:Name contains \"deep\""));
+			const QStringList deepInList = shownOf(view, every);
+			tree->setChecked(true);
+			settle();
+			const QStringList deepInTree = shownOf(view, every);
+			say("de:Name contains \"deep\" in the list shows", deepInList);
+			say("de:Name contains \"deep\" in the tree shows", deepInTree);
+			check(deepInList == without(every, { QStringLiteral("out.txt"),
+					QStringLiteral("liba.txt"), QStringLiteral("innerb.txt"),
+					QStringLiteral("build"), QStringLiteral("lib"), QStringLiteral("inner") })
+				&& deepInTree == every,
+				"folders: a folder condition, by the list's rule and by the tree's");
+
+			// --- with the View menu's filters ---
+			apply(view, QStringLiteral("*.txt"));
+			view.setShowFilterForTest(FolderCompareView::ShowIdentical, false);
+			const QStringList notIdentical = shownOf(view, every);
+			view.setShowFilterForTest(FolderCompareView::ShowIdentical, true);
+			say("*.txt without the identical shows", notIdentical);
+			check(notIdentical == QStringList{ QStringLiteral("diff.txt"), QStringLiteral("big.txt"),
+					QStringLiteral("onlyL.txt"), QStringLiteral("onlyR.txt"), QStringLiteral("sub") }
+				&& shownOf(view, every) == without(every, { QStringLiteral("note.md"),
+					QStringLiteral("subdiff.md") }),
+				"View filters: both they and the display filter must let an item through");
+
+			// a row the filter hides leaves the selection: a copy or a
+			// delete does not reach what is not on show
+			apply(view, QString());
+			auto *list = view.findChild<QTreeWidget *>();
+			if (list == nullptr)
+				return 1;
+			const auto selectedNames = [list]() {
+				QStringList names;
+				for (QTreeWidgetItemIterator it(list); *it != nullptr; ++it)
+					if ((*it)->isSelected())
+						names.append((*it)->text(0));
+				names.sort();
+				return names;
+			};
+			for (QTreeWidgetItemIterator it(list); *it != nullptr; ++it)
+				if ((*it)->text(0) == QStringLiteral("note.md")
+					|| (*it)->text(0) == QStringLiteral("same.txt")
+					|| (*it)->text(0) == QStringLiteral("subdiff.md"))
+					(*it)->setSelected(true);
+			const QStringList picked = selectedNames();
+			apply(view, QStringLiteral("*.txt"));
+			check(picked == QStringList{ QStringLiteral("note.md"), QStringLiteral("same.txt"),
+					QStringLiteral("subdiff.md") }
+				&& selectedNames() == QStringList{ QStringLiteral("same.txt") },
+				"selection: a hidden row is no longer selected");
+		}
+
+		// --- skipped items: shown when the View menu says so, and then by
+		// the display filter alone ---
+		{
+			lm::setFileFilterMask(QStringLiteral("*.txt"));
+			FolderCompareView view;
+			view.start(QStringList{ left, right });
+			waitFor(&view);
+			settle();
+			const QStringList byDefault = shownOf(view, files);
+			view.setShowFilterForTest(FolderCompareView::ShowSkipped, true);
+			const QStringList withSkipped = shownOf(view, files);
+			apply(view, QStringLiteral("*.md"));
+			const QStringList markdown = shownOf(view, files);
+			apply(view, QStringLiteral("*.txt"));
+			const QStringList texts = shownOf(view, files);
+			say("skipped and *.md shows", markdown);
+			check(byDefault == without(files, { QStringLiteral("note.md"), QStringLiteral("subdiff.md") })
+				&& withSkipped == files
+				&& markdown == QStringList{ QStringLiteral("note.md"), QStringLiteral("subdiff.md") }
+				&& texts == byDefault,
+				"skipped items: the display filter has the say once they are shown");
+			lm::setFileFilterMask(QStringLiteral("*.*"));
+		}
+
+		// --- "Filter by This Column" ---
+		{
+			FolderCompareView view;
+			view.resize(900, 520);
+			view.start(QStringList{ left, right });
+			waitFor(&view);
+			settle();
+			QStringList columns;
+			for (int column = 0; column < 7; ++column)
+				columns.append(view.columnRegistryName(column));
+			check(columns == QStringList{ QStringLiteral("Name"), QStringLiteral("Path"),
+					QStringLiteral("Status"), QStringLiteral("Lsize"), QStringLiteral("Rsize"),
+					QStringLiteral("Lmtime"), QStringLiteral("Rmtime") },
+				"columns: upstream's names for the ones this list has");
+			const auto t = [](const char *text) {
+				return QCoreApplication::translate("FileFilterMenu", text);
+			};
+			// answer the Filter Condition dialog an item opens
+			const auto answer = [&view](const QString &value)
+			{
+				QTimer::singleShot(0, &view, [&view, value]() {
+					auto *dialog = view.findChild<FilterConditionDialog *>();
+					if (dialog == nullptr)
+					{
+						printf("no Filter Condition dialog to answer\n");
+						std::exit(3);
+					}
+					dialog->findChild<QComboBox *>(QStringLiteral("conditionValue1"))
+						->setEditText(value);
+					dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+				});
+			};
+
+			// Name: one item that asks; the bar comes up with the filter,
+			// applied
+			{
+				QMenu popup;
+				const bool offered = view.buildHeaderMenu(&popup, 0);
+				QStringList labels;
+				for (const QAction *action : popup.actions())
+					labels.append(action->isSeparator() ? QStringLiteral("-") : action->text());
+				answer(QStringLiteral("same"));
+				if (offered && !popup.actions().isEmpty())
+					popup.actions().constLast()->trigger();
+				settle();
+				DisplayFilterBar *bar = view.displayFilterBarForTest();
+				say("Name contains \"same\" shows", shownOf(view, every));
+				check(offered && labels == QStringList{ t("&Filter by This Column...") }
+					&& view.displayFilter() == QStringLiteral("fe:Name contains \"same\"")
+					&& bar != nullptr && bar->field()->mask() == view.displayFilter()
+					&& bar->field()->isApplied()
+					&& shownOf(view, every) == QStringList{ QStringLiteral("same.txt"),
+						QStringLiteral("subsame.txt"), QStringLiteral("deepsame.txt") } + folders,
+					"Name: asks for a condition, shows the bar and applies the filter");
+			}
+			// Folder: the condition joins what the bar's field holds
+			{
+				view.displayFilterBarForTest()->field()->setEditText(QStringLiteral("*.txt"));
+				QMenu popup;
+				const bool offered = view.buildHeaderMenu(&popup, 1);
+				answer(QStringLiteral("sub"));
+				if (offered && !popup.actions().isEmpty())
+					popup.actions().constLast()->trigger();
+				settle();
+				say("*.txt in a folder named sub shows", shownOf(view, files));
+				check(view.displayFilter() == QStringLiteral("*.txt|fe:Folder contains \"sub\"")
+					&& shownOf(view, files) == QStringList{ QStringLiteral("subsame.txt"),
+						QStringLiteral("deepsame.txt") },
+					"Folder: the condition joins the filter in the bar's field");
+			}
+			// Comparison result: its own dialog
+			const auto byResult = [&](const QStringList &boxes, bool exclude, bool emptyFirst)
+			{
+				if (DisplayFilterBar *bar = view.displayFilterBarForTest())
+					bar->field()->setEditText(QString());
+				QMenu popup;
+				if (!view.buildHeaderMenu(&popup, 2) || popup.actions().isEmpty())
+					return QStringLiteral("(no menu)");
+				QString state;
+				QTimer::singleShot(0, &view, [&]() {
+					auto *dialog = view.findChild<ComparisonResultFilterDialog *>();
+					if (dialog == nullptr)
+					{
+						printf("no Filter by Comparison Result dialog to answer\n");
+						std::exit(3);
+					}
+					QStringList visible;
+					for (const QCheckBox *box : dialog->findChildren<QCheckBox *>())
+						if (box->isVisibleTo(dialog))
+							visible.append(box->text());
+					state = QString::number(visible.size());
+					QPushButton *okButton = dialog->findChild<QDialogButtonBox *>()
+						->button(QDialogButtonBox::Ok);
+					if (emptyFirst)
+					{
+						// nothing ticked: OK does nothing
+						okButton->click();
+						state += dialog->isVisible() ? QStringLiteral(" stays") : QStringLiteral(" gone");
+					}
+					if (exclude)
+						dialog->findChild<QRadioButton *>(QStringLiteral("resultExclude"))
+							->setChecked(true);
+					for (const QString &box : boxes)
+						dialog->findChild<QCheckBox *>(box)->setChecked(true);
+					shoot(dialog, "result-2way");
+					okButton->click();
+				});
+				popup.actions().constLast()->trigger();
+				settle();
+				return state;
+			};
+			{
+				const QString state = byResult({ QStringLiteral("resultDifferent"),
+					QStringLiteral("resultLeftOnly") }, false, true);
+				const QString included = view.displayFilter();
+				const QStringList includedFiles = shownOf(view, files);
+				byResult({ QStringLiteral("resultIdentical") }, true, false);
+				say("not identical shows", shownOf(view, files));
+				check(state == QStringLiteral("5 stays")
+					&& included == QStringLiteral("fe:(Different) or (LeftExists and not RightExists)")
+					&& includedFiles == QStringList{ QStringLiteral("diff.txt"),
+						QStringLiteral("big.txt"), QStringLiteral("onlyL.txt"),
+						QStringLiteral("subdiff.md") }
+					&& view.displayFilter() == QStringLiteral("fe:not (Identical)")
+					&& shownOf(view, files) == QStringList{ QStringLiteral("diff.txt"),
+						QStringLiteral("big.txt"), QStringLiteral("onlyL.txt"),
+						QStringLiteral("onlyR.txt"), QStringLiteral("subdiff.md") },
+					"Comparison result: the results to keep or to leave out, as one condition");
+			}
+			// sizes and dates: a submenu, about the column's own side
+			{
+				view.displayFilterBarForTest()->field()->setEditText(QString());
+				QMenu popup;
+				const bool offered = view.buildHeaderMenu(&popup, 3);
+				auto *sizes = popup.findChild<FileFilterMenu *>();
+				int leaves = 0;
+				for (const QAction *action : sizes != nullptr ? sizes->actions() : QList<QAction *>())
+					leaves += action->isSeparator() || action->menu() != nullptr ? 0 : 1;
+				const QString title = sizes != nullptr ? sizes->title() : QString();
+				if (sizes != nullptr)
+					sizes->pickForTest(Menu::SizeFirst + 1);
+				settle();
+				const QString leftSize = view.displayFilter();
+				const QStringList leftLarge = shownOf(view, files);
+
+				view.displayFilterBarForTest()->field()->setEditText(QString());
+				QMenu rightPopup;
+				view.buildHeaderMenu(&rightPopup, 4);
+				if (auto *rightSizes = rightPopup.findChild<FileFilterMenu *>())
+					rightSizes->pickForTest(Menu::SizeFirst);
+				settle();
+				const QString rightSize = view.displayFilter();
+				say("RightSize < 1KB shows", shownOf(view, files));
+				check(offered && title == t("&Filter by This Column") && leaves == 15
+					&& popup.actions().size() == 1
+					&& leftSize == QStringLiteral("fe:LeftSize >= 1KB")
+					&& leftLarge == QStringList{ QStringLiteral("big.txt") }
+					&& rightSize == QStringLiteral("fe:RightSize < 1KB")
+					&& shownOf(view, files) == without(files, { QStringLiteral("big.txt"),
+						QStringLiteral("onlyL.txt") }),
+					"sizes: a submenu of conditions on the column's side");
+
+				view.displayFilterBarForTest()->field()->setEditText(QString());
+				QMenu datePopup;
+				view.buildHeaderMenu(&datePopup, 6);
+				auto *dates = datePopup.findChild<FileFilterMenu *>();
+				QStringList groups;
+				for (const QAction *action : dates != nullptr ? dates->actions() : QList<QAction *>())
+					groups.append(action->text());
+				if (dates != nullptr)
+					dates->pickForTest(Menu::DateFirst + 3);
+				settle();
+				say("RightDate today shows", shownOf(view, files));
+				check(groups == QStringList{ t("&Hour"), t("&Day"), t("&Week"), t("&Month"),
+						t("&Year"), t("&Custom Range...") }
+					&& view.displayFilter() == QStringLiteral("fe:RightDate >= today()")
+					&& shownOf(view, files) == without(files, { QStringLiteral("onlyL.txt") }),
+					"dates: the same, with upstream's ranges");
+			}
+			// with the bar closed, the condition joins the filter in use
+			{
+				apply(view, QStringLiteral("*.txt"));
+				view.toggleDisplayFilterBar();
+				settle();
+				QMenu popup;
+				view.buildHeaderMenu(&popup, 3);
+				if (auto *sizes = popup.findChild<FileFilterMenu *>())
+					sizes->pickForTest(Menu::SizeFirst + 1);
+				settle();
+				check(view.displayFilter() == QStringLiteral("*.txt|fe:LeftSize >= 1KB")
+					&& view.displayFilterBarShown()
+					&& shownOf(view, files) == QStringList{ QStringLiteral("big.txt") },
+					"bar closed: the condition joins the filter in use, and the bar comes back");
+			}
+		}
+
+		// --- the engine's items follow a copy, a delete and a save ---
+		{
+			FolderCompareView view;
+			view.start(QStringList{ left, right });
+			waitFor(&view);
+			settle();
+			const QString leftOnly = QStringLiteral("fe:LeftExists and not RightExists");
+			apply(view, leftOnly);
+			const QStringList before = shownOf(view, files);
+			view.copyRowForTest(QStringLiteral("onlyL.txt"), 0, 1);
+			view.applyDisplayFilter();
+			settle();
+			const QStringList afterCopy = shownOf(view, files);
+			apply(view, QStringLiteral("fe:Identical"));
+			const bool copyIsIdentical = view.rowShownForTest(QStringLiteral("onlyL.txt"));
+			view.deleteRowForTest(QStringLiteral("same.txt"), { 1 });
+			apply(view, leftOnly);
+			const QStringList afterDelete = shownOf(view, files);
+			// a save that left both files alike, and larger
+			write(left + QStringLiteral("/diff.txt"), QByteArray(3000, 'z'));
+			write(right + QStringLiteral("/diff.txt"), QByteArray(3000, 'z'));
+			view.updateSavedItem({ left + QStringLiteral("/diff.txt"),
+				right + QStringLiteral("/diff.txt") }, 0);
+			apply(view, QStringLiteral("fe:Identical and Size >= 1KB"));
+			say("after the save, identical and large", shownOf(view, files));
+			check(before == QStringList{ QStringLiteral("onlyL.txt") } && afterCopy.isEmpty()
+				&& copyIsIdentical && afterDelete == QStringList{ QStringLiteral("same.txt") }
+				&& shownOf(view, files) == QStringList{ QStringLiteral("diff.txt") },
+				"operations: a copy, a delete and a save change what the filter finds");
+
+			// what was done to the rows is still there when the list is
+			// built again, as a change of theme or of tree mode does
+			view.deleteRowForTest(QStringLiteral("note.md"), { 0, 1 });
+			apply(view, QString());
+			const auto states = [&view]() {
+				return QList<int>{ view.rowCategoryForTest(QStringLiteral("onlyL.txt")),
+					view.rowCategoryForTest(QStringLiteral("same.txt")),
+					view.rowCategoryForTest(QStringLiteral("diff.txt")),
+					view.rowCategoryForTest(QStringLiteral("note.md")) };
+			};
+			const QList<int> done = states();
+			if (QAction *tree = treeAction(view))
+			{
+				tree->setChecked(false);
+				settle();
+				tree->setChecked(true);
+				settle();
+			}
+			check(done == QList<int>{ lm::FolderCompareItem::Identical,
+					lm::FolderCompareItem::LeftOnly, lm::FolderCompareItem::Identical, -1 }
+				&& states() == done,
+				"operations: the rows keep what was done to them when the list is built again");
+		}
+		{
+			// a folder copied to the other side: in the flat list a folder
+			// the filter leaves out takes what is in it along
+			write(left + QStringLiteral("/solo/inside.txt"), "i\n");
+			FolderCompareView view;
+			view.start(QStringList{ left, right });
+			waitFor(&view);
+			settle();
+			if (QAction *tree = treeAction(view))
+				tree->setChecked(false);
+			const QStringList solo{ QStringLiteral("solo"), QStringLiteral("inside.txt") };
+			apply(view, QStringLiteral("de:LeftExists and not RightExists"));
+			const QStringList before = shownOf(view, solo);
+			view.copyRowForTest(QStringLiteral("solo"), 0, 1);
+			view.applyDisplayFilter();
+			settle();
+			check(before == solo && shownOf(view, solo).isEmpty()
+				&& QFileInfo::exists(right + QStringLiteral("/solo/inside.txt")),
+				"operations: a copied folder is on both sides for the filter too");
+			if (QAction *tree = treeAction(view))
+				tree->setChecked(true);
+		}
+
+		// --- three folders ---
+		{
+			const QString roots[3] = { dir.filePath(QStringLiteral("a")),
+				dir.filePath(QStringLiteral("b")), dir.filePath(QStringLiteral("c")) };
+			const auto three = [&](const char *name, const char *l, const char *m, const char *r)
+			{
+				const char *texts[3] = { l, m, r };
+				for (int i = 0; i < 3; ++i)
+					if (texts[i] != nullptr)
+						write(roots[i] + QLatin1Char('/') + QLatin1String(name), texts[i]);
+			};
+			three("same3.txt", "x\n", "x\n", "x\n");
+			three("ldiff.txt", "L\n", "x\n", "x\n");
+			three("mdiff.txt", "x\n", "M\n", "x\n");
+			three("rdiff.txt", "x\n", "x\n", "R\n");
+			three("alldiff.txt", "1\n", "2\n", "3\n");
+			three("onlyA.txt", "a\n", nullptr, nullptr);
+			three("onlyB.txt", nullptr, "b\n", nullptr);
+			three("onlyC.txt", nullptr, nullptr, "c\n");
+			three("noA.txt", nullptr, "n\n", "n\n");
+			three("noB.txt", "n\n", nullptr, "n\n");
+			three("noC.txt", "n\n", "n\n", nullptr);
+			const QStringList names{ QStringLiteral("same3.txt"), QStringLiteral("ldiff.txt"),
+				QStringLiteral("mdiff.txt"), QStringLiteral("rdiff.txt"),
+				QStringLiteral("alldiff.txt"), QStringLiteral("onlyA.txt"),
+				QStringLiteral("onlyB.txt"), QStringLiteral("onlyC.txt"), QStringLiteral("noA.txt"),
+				QStringLiteral("noB.txt"), QStringLiteral("noC.txt") };
+			FolderCompareView view;
+			view.resize(1000, 520);
+			view.start(QStringList{ roots[0], roots[1], roots[2] });
+			waitFor(&view);
+			settle();
+			QStringList columns;
+			for (int column = 3; column < 9; ++column)
+				columns.append(view.columnRegistryName(column));
+
+			int boxesShown = 0;
+			const auto byResult = [&](const char *box)
+			{
+				if (DisplayFilterBar *bar = view.displayFilterBarForTest())
+					bar->field()->setEditText(QString());
+				QMenu popup;
+				if (!view.buildHeaderMenu(&popup, 2) || popup.actions().isEmpty())
+					return QStringList{ QStringLiteral("(no menu)") };
+				QTimer::singleShot(0, &view, [&view, &boxesShown, &shoot, box]() {
+					auto *dialog = view.findChild<ComparisonResultFilterDialog *>();
+					if (dialog == nullptr)
+					{
+						printf("no Filter by Comparison Result dialog to answer\n");
+						std::exit(3);
+					}
+					boxesShown = 0;
+					for (const QCheckBox *candidate : dialog->findChildren<QCheckBox *>())
+						boxesShown += candidate->isVisibleTo(dialog) ? 1 : 0;
+					dialog->findChild<QCheckBox *>(QLatin1String(box))->setChecked(true);
+					shoot(dialog, "result-3way");
+					dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+				});
+				popup.actions().constLast()->trigger();
+				settle();
+				return shownOf(view, names);
+			};
+			const auto one = [](const char *name) { return QStringList{ QLatin1String(name) }; };
+			const QStringList identical = byResult("resultIdentical");
+			const QStringList different = byResult("resultDifferent");
+			say("three folders, identical", identical);
+			say("three folders, different", different);
+			check(columns == QStringList{ QStringLiteral("Lsize"), QStringLiteral("Msize"),
+					QStringLiteral("Rsize"), QStringLiteral("Lmtime"), QStringLiteral("Mmtime"),
+					QStringLiteral("Rmtime") }
+				&& boxesShown == 12 && identical == one("same3.txt")
+				&& different == QStringList{ QStringLiteral("ldiff.txt"),
+					QStringLiteral("mdiff.txt"), QStringLiteral("rdiff.txt"),
+					QStringLiteral("alldiff.txt") },
+				"three folders: the middle columns, and every result in the dialog");
+			check(byResult("resultLeftOnly") == one("onlyA.txt")
+				&& byResult("resultMiddleOnly") == one("onlyB.txt")
+				&& byResult("resultRightOnly") == one("onlyC.txt")
+				&& byResult("resultLeftOnlyMissing") == one("noA.txt")
+				&& byResult("resultMiddleOnlyMissing") == one("noB.txt")
+				&& byResult("resultRightOnlyMissing") == one("noC.txt"),
+				"three folders: on one side only, missing on one side only");
+			const QStringList leftDiffers = byResult("resultLeftOnlyDifferent");
+			const QStringList middleDiffers = byResult("resultMiddleOnlyDifferent");
+			const QStringList rightDiffers = byResult("resultRightOnlyDifferent");
+			const QString rightCondition = view.displayFilter();
+			// what upstream's dialog writes for the right side
+			apply(view, QStringLiteral(
+				"fe:not DifferentLeftMiddle and DifferentMiddleRight and not DifferentLeftRight"));
+			const QStringList upstreams = shownOf(view, names);
+			say("only the left differs", leftDiffers);
+			say("only the middle differs", middleDiffers);
+			say("only the right differs", rightDiffers);
+			say("upstream's condition for it finds", upstreams);
+			// (the engine marks the odd side out the same way whether its
+			// file differs, is the only one or is the one missing: upstream's
+			// conditions for the left and the middle find all three)
+			check(leftDiffers == QStringList{ QStringLiteral("ldiff.txt"),
+					QStringLiteral("onlyA.txt"), QStringLiteral("noA.txt") }
+				&& middleDiffers == QStringList{ QStringLiteral("mdiff.txt"),
+					QStringLiteral("onlyB.txt"), QStringLiteral("noB.txt") }
+				&& rightDiffers == QStringList{ QStringLiteral("rdiff.txt"),
+					QStringLiteral("onlyC.txt"), QStringLiteral("noC.txt") }
+				&& rightCondition == QStringLiteral(
+					"fe:DifferentLeftMiddle and DifferentMiddleRight")
+				&& upstreams.isEmpty(),
+				"three folders: one side alone different, the right one included");
+		}
+
+		// --- the View menu's item ---
+		{
+			MainWindow window;
+			window.resize(1100, 640);
+			auto *action = window.findChild<QAction *>(QStringLiteral("displayFilterBarAction"));
+			if (action == nullptr)
+				return 1;
+			const bool idle = !action->isEnabled();
+			window.openFolderComparison(left, right);
+			settle();
+			auto *folder = window.findChild<FolderCompareView *>();
+			waitFor(folder);
+			settle();
+			if (folder == nullptr)
+				return 1;
+			const bool usable = action->isEnabled() && !action->isChecked();
+			action->trigger();
+			settle();
+			const bool shownAndTicked = folder->displayFilterBarShown() && action->isChecked();
+			apply(*folder, QStringLiteral("*.txt"));
+			window.show();
+			settle();
+			shoot(&window, "window");
+			action->trigger();
+			settle();
+			const bool closed = !folder->displayFilterBarShown() && !action->isChecked()
+				&& folder->displayFilter() == QStringLiteral("*.txt");
+			// with the shortcut's keys down the command only ever shows the
+			// bar, the filter in use in its field
+			const Qt::KeyboardModifiers chord = Qt::ControlModifier | Qt::ShiftModifier;
+			window.displayFilterBarCommand(chord);
+			const DisplayFilterBar *byKeys = folder->displayFilterBarForTest();
+			window.displayFilterBarCommand(chord);
+			const bool keysOnlyShow = byKeys != nullptr
+				&& folder->displayFilterBarForTest() == byKeys
+				&& byKeys->filterText() == QStringLiteral("*.txt");
+			window.displayFilterBarCommand(Qt::NoModifier);
+			settle();
+			const bool menuCloses = !folder->displayFilterBarShown();
+			// (a file comparison has a bar of its own, not shown yet: the item
+			// goes by the tab in front)
+			window.displayFilterBarCommand(chord);
+			window.openBlankComparison();
+			settle();
+			check(action->text() == MainWindow::tr("Displa&y Filter Bar")
+				&& action->shortcut() == QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L)
+				&& action->isCheckable() && idle && usable && shownAndTicked && closed
+				&& action->isEnabled() && !action->isChecked()
+				&& folder->displayFilterBarShown(),
+				"View menu: Display Filter Bar, for the folder comparison in front");
+			check(keysOnlyShow && menuCloses,
+				"View menu: the shortcut only shows the bar, the item shows and closes it");
+		}
+
+		printf("display filter: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestLineFilterOpt))
+	{
+		// WinMerge's display filter of the file window: the filter bar,
+		// the lines its filter hides, what the editor does around hidden
+		// lines, the differences it leaves out of the navigation, the "="
+		// menu and the pane menu's "Add to Display Filter"
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 3; ++i)
+				QCoreApplication::processEvents();
+			QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+		};
+		const auto say = [](const char *what, const QStringList &lines) {
+			printf("  %s: %s\n", what, qPrintable(lines.join(QStringLiteral(" | "))));
+		};
+		const auto list = [](std::initializer_list<const char *> texts) {
+			QStringList lines;
+			for (const char *text : texts)
+				lines.append(QLatin1String(text));
+			return lines;
+		};
+		const QString shots = qEnvironmentVariable("MERGEDESK_SELFTEST_SHOTS");
+		const QString language = qEnvironmentVariable("MERGEDESK_LANGUAGE", QStringLiteral("en"));
+		const auto shoot = [&shots, &language](QWidget *widget, const char *name)
+		{
+			if (!shots.isEmpty())
+				widget->grab().save(QStringLiteral("%1/lf-%2-%3.png").arg(shots, language,
+					QLatin1String(name)));
+		};
+		const QString historyKey = lm::lineDisplayFilterHistoryKey();
+		// upstream's words for a copy it refuses
+		const char *const refusal = "Merging/copying differences that contain hidden lines is "
+			"not currently supported.\n\nPlease clear the display filter or adjust the "
+			"filter settings to show all lines before merging.";
+		QStringList messages;
+		lm::setMessageSinkForTest([&messages](const QString &text) { messages.append(text); });
+		lm::setReplaceListBaseForTest(dir.filePath(QStringLiteral("lists")));
+		QStringList opened;
+		lm::setReplaceListOpenerForTest([&opened](const QString &path) { opened.append(path); });
+		// type a filter in the bar and press Apply
+		const auto apply = [&settle](FileCompareView &view, const QString &text)
+		{
+			view.showDisplayFilterBar();
+			DisplayFilterBar *bar = view.displayFilterBarForTest();
+			bar->field()->setEditText(text);
+			emit bar->field()->lineEdit()->textEdited(text); // as typed
+			bar->findChild<QPushButton *>(QStringLiteral("displayFilterApply"))->click();
+			settle();
+		};
+		const auto key = [](QWidget *target, int code, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
+			const QString &text = QString())
+		{
+			QKeyEvent press(QEvent::KeyPress, code, modifiers, text);
+			QCoreApplication::sendEvent(target, &press);
+		};
+		// select from the start of a view line to a column of another
+		const auto select = [](DiffTextEdit *pane, int fromLine, int toLine, int toColumn)
+		{
+			QTextCursor cursor(pane->document()->findBlockByNumber(fromLine));
+			const QTextBlock last = pane->document()->findBlockByNumber(toLine);
+			cursor.setPosition(last.position() + (toColumn < 0 ? last.length() - 1 : toColumn),
+				QTextCursor::KeepAnchor);
+			pane->setTextCursor(cursor);
+		};
+
+		// --- two files: a changed line, a line of the left alone and two
+		// of the right alone, with lines alike between them ---
+		//   0 alpha       alpha
+		//   1 ERROR one   ERROR one
+		//   2 beta        beta changed
+		//   3 gamma       gamma
+		//   4 ERROR two   -
+		//   5 delta       delta
+		//   6 epsilon     epsilon
+		//   7 -           extra error
+		//   8 -           zeta
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		const QByteArray leftText = "alpha\nERROR one\nbeta\ngamma\nERROR two\ndelta\nepsilon\n";
+		const QByteArray rightText =
+			"alpha\nERROR one\nbeta changed\ngamma\ndelta\nepsilon\nextra error\nzeta\n";
+		const auto fresh = [&]() {
+			write(left, leftText);
+			write(right, rightText);
+		};
+		const auto open = [&](FileCompareView &view) {
+			QString error;
+			if (!view.compare(left, right, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				std::exit(2);
+			}
+			settle();
+		};
+		fresh();
+
+		{
+			FileCompareView view;
+			view.resize(900, 520);
+			open(view);
+			const QStringList allLeft = view.shownLinesForTest(0);
+			const QStringList allRight = view.shownLinesForTest(1);
+			check(view.diffCount() == 3 && !view.displayFilterBarShown()
+				&& view.displayFilter().isEmpty() && allLeft.size() == 7 && allRight.size() == 8,
+				"start: three differences, every line shown, no bar and no filter");
+
+			// --- the bar ---
+			view.toggleDisplayFilterBar();
+			DisplayFilterBar *bar = view.displayFilterBarForTest();
+			if (bar == nullptr)
+				return 1;
+			check(bar->field()->mask().isEmpty()
+				&& bar->field()->lineEdit()->placeholderText() == DisplayFilterBar::tr("e.g. %1")
+					.arg(QStringLiteral("ERROR / le:Line contains \"ERROR\""))
+				&& bar->findChild<QPushButton *>(QStringLiteral("displayFilterApply")) != nullptr
+				&& qobject_cast<LineFilterMenu *>(bar->menuForTest()) != nullptr,
+				"bar: the same strip as the folder window's, for a line filter");
+			view.toggleDisplayFilterBar();
+			settle();
+			check(!view.displayFilterBarShown(), "bar: the View menu item shows it and closes it");
+
+			// --- Apply: a text to find hides the lines without it ---
+			apply(view, QStringLiteral("ERROR"));
+			bar = view.displayFilterBarForTest();
+			say("left shows", view.shownLinesForTest(0));
+			say("right shows", view.shownLinesForTest(1));
+			check(view.displayFilter() == QStringLiteral("ERROR")
+				&& view.shownLinesForTest(0) == list({ "ERROR one", "ERROR two" })
+				&& view.shownLinesForTest(1) == list({ "ERROR one", "extra error" })
+				&& view.lineHiddenForTest(0) && !view.lineHiddenForTest(4)
+				&& bar->field()->isApplied() && view.diffCount() == 3
+				&& lm::fileFilterHistory(historyKey) == list({ "ERROR" })
+				&& lm::fileFilterHistory(lm::displayFilterHistoryKey()).isEmpty(),
+				"Apply: a text to find hides the lines without it, whatever its case");
+			shoot(&view, "bar");
+
+			// --- the differences a filter hides whole are passed over ---
+			view.gotoFirstDiff();
+			const int first = view.currentDiffForTest();
+			view.gotoNextDiff();
+			const int second = view.currentDiffForTest();
+			view.gotoNextDiff();
+			const int still = view.currentDiffForTest();
+			view.gotoPrevDiff();
+			const int back = view.currentDiffForTest();
+			view.gotoPrevDiff();
+			const int stays = view.currentDiffForTest();
+			view.gotoLastDiff();
+			printf("  differences stopped at: %d %d %d %d %d %d\n", first, second, still, back, stays,
+				view.currentDiffForTest());
+			check(first == 1 && second == 2 && still == 2 && back == 1 && stays == 1
+				&& view.currentDiffForTest() == 2,
+				"navigation: a difference with every line hidden is passed over");
+
+			// --- Copy All: not with hidden lines among the differences ---
+			messages.clear();
+			const QStringList rightBefore = view.realLinesForTest(1);
+			view.copyAllFrom(0, 1);
+			check(messages == QStringList{ QCoreApplication::translate("FileCompareView", refusal) }
+				&& view.realLinesForTest(1) == rightBefore && !view.isModified(),
+				"Copy All: refused while a difference has hidden lines");
+
+			// --- expressions ---
+			apply(view, QStringLiteral("le:Different"));
+			const QStringList differentLeft = view.shownLinesForTest(0);
+			const QStringList differentRight = view.shownLinesForTest(1);
+			apply(view, QStringLiteral("le:LeftMissing"));
+			const QStringList missingRight = view.shownLinesForTest(1);
+			const bool missingLeftEmpty = view.shownLinesForTest(0).isEmpty();
+			apply(view, QStringLiteral("le:LineLength > 9"));
+			const QStringList longRight = view.shownLinesForTest(1);
+			apply(view, QStringLiteral("le:LeftLineNumber <= 2 or RightEOLStr = \"CRLF\""));
+			const QStringList topLeft = view.shownLinesForTest(0);
+			say("different, left", differentLeft);
+			say("different, right", differentRight);
+			say("longer than 9, right", longRight);
+			check(differentLeft == list({ "beta", "ERROR two" })
+				&& differentRight == list({ "beta changed", "extra error", "zeta" })
+				&& missingLeftEmpty && missingRight == list({ "extra error", "zeta" })
+				&& longRight == list({ "beta changed", "extra error" })
+				&& topLeft == list({ "alpha", "ERROR one" }),
+				"Apply: a line expression, on a line's status, side, length, number and ending");
+
+			// --- a rule under each shown line that hidden lines follow, from
+			// the margin on (CCrystalTextView's DrawBoundaryLine) ---
+			{
+				apply(view, QStringLiteral("le:Different")); // shows 2, 4, 7 and 8
+				DiffTextEdit *pane = view.paneForTest(1);
+				const auto ruled = [pane](int line, bool margin)
+				{
+					const QImage image = pane->grab().toImage();
+					const int bottom = pane->lineBottomForTest(line);
+					if (bottom < 0)
+						return false;
+					// (past the text, and clear of the scroll bar a Mac lays
+					// over the edge)
+					const QPoint inText = pane->viewport()->mapTo(pane,
+						QPoint(pane->viewport()->width() / 2, bottom - 1));
+					const QPoint at = margin ? QPoint(pane->contentsRect().left() + 1, inText.y())
+						: inText;
+					const qreal ratio = image.devicePixelRatio();
+					return image.pixelColor(qRound(at.x() * ratio), qRound(at.y() * ratio))
+						== pane->palette().color(QPalette::Text);
+				};
+				const bool under = ruled(2, false) && ruled(4, false) && ruled(2, true)
+					&& ruled(4, true);
+				const bool notUnder = !ruled(7, false) && !ruled(8, false) && !ruled(7, true);
+				shoot(&view, "rules");
+				apply(view, QString());
+				check(under && notUnder && !ruled(2, false) && !ruled(2, true),
+					"rules: one under each shown line that hidden lines follow");
+			}
+
+			// --- one that does not parse hides nothing, and is marked ---
+			apply(view, QStringLiteral("le:Line contains"));
+			bar = view.displayFilterBarForTest();
+			printf("  its error: %s\n", qPrintable(bar->field()->errors().join(QStringLiteral(" / "))));
+			check(view.shownLinesForTest(0) == allLeft && view.shownLinesForTest(1) == allRight
+				&& !bar->field()->errors().isEmpty() && !bar->field()->isApplied()
+				&& view.displayFilter() == QStringLiteral("le:Line contains"),
+				"Apply: an expression that does not parse is marked, and hides nothing");
+
+			// --- an empty field takes the filter away; the history stays ---
+			apply(view, QStringLiteral("ERROR"));
+			apply(view, QString());
+			check(view.displayFilter().isEmpty() && view.shownLinesForTest(0) == allLeft
+				&& view.shownLinesForTest(1) == allRight && !view.lineHiddenForTest(0)
+				&& lm::fileFilterHistory(historyKey).value(0) == QStringLiteral("ERROR")
+				&& lm::fileFilterHistory(historyKey).size() == 6,
+				"Apply: an empty field shows every line again");
+
+			// --- Enter applies, Esc closes; the filter stays in use, and
+			// through a recompare ---
+			bar = view.displayFilterBarForTest();
+			bar->field()->setEditText(QStringLiteral("zeta"));
+			key(bar->field()->lineEdit(), Qt::Key_Return);
+			settle();
+			const QStringList zeta = view.shownLinesForTest(1);
+			key(view.displayFilterBarForTest()->field()->lineEdit(), Qt::Key_Escape);
+			settle();
+			const bool closed = !view.displayFilterBarShown();
+			view.recompare();
+			settle();
+			view.showDisplayFilterBar();
+			check(zeta == list({ "zeta" }) && closed && view.displayFilter() == QStringLiteral("zeta")
+				&& view.shownLinesForTest(1) == zeta && view.shownLinesForTest(0).isEmpty()
+				&& view.displayFilterBarForTest()->field()->mask() == QStringLiteral("zeta"),
+				"keys: Enter applies, Esc closes; the filter stays, through a recompare too");
+
+			// --- an edit shows in the filter's lines once compared again ---
+			view.typeAtForTest(0, 3, QStringLiteral("zeta "));
+			view.recompare();
+			settle();
+			say("after typing zeta into gamma, left", view.shownLinesForTest(0));
+			check(view.shownLinesForTest(0) == list({ "zeta gamma" }),
+				"edits: the lines are looked at again when the files are compared again");
+		}
+
+		// --- the editor around hidden lines ---
+		{
+			fresh();
+			FileCompareView view;
+			open(view);
+			apply(view, QStringLiteral("ERROR"));
+			DiffTextEdit *pane = view.paneForTest(0);
+
+			// copy leaves the hidden lines out, as it does the ghost lines
+			view.selectAllAndCopyForTest(0);
+			const QString copied = QGuiApplication::clipboard()->text();
+			check(copied == QStringLiteral("ERROR one\nERROR two"),
+				"copy: only the lines that show");
+
+			// the cursor never rests in a hidden line
+			view.setCursorViewLineForTest(0, 1);
+			view.setCursorViewLineForTest(0, 2);
+			const int forward = view.cursorViewLineForTest(0);
+			view.setCursorViewLineForTest(0, 3);
+			const int backward = view.cursorViewLineForTest(0);
+			view.setCursorViewLineForTest(0, 1);
+			key(pane, Qt::Key_Down);
+			const int down = view.cursorViewLineForTest(0);
+			key(pane, Qt::Key_Up);
+			pane->moveCursor(QTextCursor::EndOfLine); // (the End key is the text's end on a Mac)
+			key(pane, Qt::Key_Right);
+			const int rightward = view.cursorViewLineForTest(0);
+			const int column = pane->textCursor().positionInBlock();
+			key(pane, Qt::Key_Left);
+			const int leftward = view.cursorViewLineForTest(0);
+			printf("  cursor lines: %d %d %d %d(%d) %d\n", forward, backward, down, rightward, column,
+				leftward);
+			check(forward == 4 && backward == 1 && down == 4 && rightward == 4 && column == 0
+				&& leftward == 1,
+				"cursor: it goes from a shown line to the next, never into a hidden one");
+
+			// Backspace at the start of a line that follows hidden lines
+			// joins nothing
+			const QStringList before = view.realLinesForTest(0);
+			view.setCursorViewLineForTest(0, 4);
+			key(pane, Qt::Key_Backspace, Qt::NoModifier, QStringLiteral("\b"));
+			check(view.realLinesForTest(0) == before && !view.isModified(),
+				"Backspace: a hidden line above is not joined");
+
+			// Delete over a selection that spans hidden lines takes the
+			// stretches that show
+			select(pane, 1, 4, -1);
+			key(pane, Qt::Key_Delete, Qt::NoModifier, QStringLiteral("\x7f"));
+			say("after Delete, left", view.realLinesForTest(0));
+			check(view.realLinesForTest(0) == list({ "alpha", "beta", "gamma", "", "delta",
+					"epsilon" }),
+				"Delete: the hidden lines of the selection stay");
+			view.undoActive();
+			check(view.realLinesForTest(0) == before, "Delete: one undo brings it all back");
+		}
+		{
+			// a first line with hidden lines after it: it goes whole, they
+			// stay the hidden lines they are, through an undo as well
+			fresh();
+			FileCompareView view;
+			open(view);
+			apply(view, QStringLiteral("alpha"));
+			DiffTextEdit *pane = view.paneForTest(0);
+			pane->selectAll();
+			key(pane, Qt::Key_Delete, Qt::NoModifier, QStringLiteral("\x7f"));
+			const QStringList left = view.realLinesForTest(0);
+			const QStringList shownAfter = view.shownLinesForTest(0);
+			const bool noneShows = shownAfter.isEmpty();
+			view.undoActive();
+			say("after the Delete, left has", left);
+			say("after the Delete, left shows", shownAfter);
+			say("after the undo, left shows", view.shownLinesForTest(0));
+			check(left == list({ "ERROR one", "beta", "gamma", "ERROR two", "delta", "epsilon" })
+				&& noneShows && view.realLinesForTest(0).size() == 7
+				&& view.shownLinesForTest(0) == list({ "alpha" }),
+				"Delete at the top: the hidden lines stay hidden, after an undo too");
+		}
+		{
+			// typing over one, and cutting one
+			fresh();
+			FileCompareView view;
+			open(view);
+			apply(view, QStringLiteral("ERROR"));
+			DiffTextEdit *pane = view.paneForTest(0);
+			select(pane, 1, 4, 5);
+			key(pane, Qt::Key_X, Qt::NoModifier, QStringLiteral("X"));
+			say("after typing over, left", view.realLinesForTest(0));
+			const QStringList typed = view.realLinesForTest(0);
+			view.undoActive();
+			const QStringList undone = view.realLinesForTest(0);
+			select(pane, 1, 4, 5);
+			key(pane, Qt::Key_X, Qt::ControlModifier, QStringLiteral("x"));
+			const QString cut = QGuiApplication::clipboard()->text();
+			say("after cutting, left", view.realLinesForTest(0));
+			check(typed == list({ "alpha", "beta", "gamma", "X two", "delta", "epsilon" })
+				&& undone.size() == 7 && undone.value(1) == QStringLiteral("ERROR one")
+				&& cut == QStringLiteral("ERROR one\nERROR")
+				&& view.realLinesForTest(0) == list({ "alpha", "beta", "gamma", " two", "delta",
+					"epsilon" }),
+				"typing and Cut: over the lines that show, in one undo step");
+		}
+		{
+			// pasting over one, Replace All, and the menu of a right click
+			fresh();
+			FileCompareView view;
+			view.resize(900, 520);
+			open(view);
+			apply(view, QStringLiteral("ERROR"));
+			DiffTextEdit *pane = view.paneForTest(0);
+			const QStringList before = view.realLinesForTest(0);
+			QGuiApplication::clipboard()->setText(QStringLiteral("PASTED"));
+			select(pane, 1, 4, 5);
+			pane->paste();
+			const QStringList pasted = view.realLinesForTest(0);
+			view.undoActive();
+			say("after pasting over, left", pasted);
+			check(pasted == list({ "alpha", "beta", "gamma", "PASTED two", "delta", "epsilon" })
+				&& view.realLinesForTest(0) == before,
+				"Paste: over the lines that show, in one undo step");
+
+			// Replace All, from the top: what the hidden lines hold stays
+			view.setCursorViewLineForTest(0, 0);
+			PaneSearch *search = view.paneSearchForTest(0);
+			search->editReplace();
+			EditReplaceDialog *replace = search->replaceDialog();
+			if (replace == nullptr)
+				return 1;
+			const auto typeInto = [](QComboBox *field, const QString &text) {
+				field->lineEdit()->setText(text);
+				emit field->lineEdit()->textEdited(text);
+			};
+			typeInto(replace->findTextForTest(), QStringLiteral("e"));
+			typeInto(replace->replaceTextForTest(), QStringLiteral("#"));
+			messages.clear();
+			replace->replaceAllForTest()->click();
+			replace->reject();
+			say("after replacing every e, left", view.realLinesForTest(0));
+			check(view.realLinesForTest(0) == list({ "alpha", "#RROR on#", "beta", "gamma",
+					"#RROR two", "delta", "epsilon" })
+					&& messages == QStringList{ QCoreApplication::translate("MessageBoxes",
+						"Replaced %1 string(s).").arg(3) },
+				"Replace All: what the hidden lines hold stays");
+
+			// the menu of a right click, handed over in place of being opened
+			// (on screen it lasts only while the application is in front)
+			QStringList offered;
+			DiffTextEdit::setContextMenuPresenterForTest([&offered](QMenu *menu) {
+				for (const QAction *action : menu->actions())
+					offered.append(action->isSeparator() ? QStringLiteral("-")
+						: action->menu() != nullptr ? QStringLiteral(">") + action->text()
+						: action->text());
+				offered.append(menu->findChild<QAction *>(QStringLiteral("addToDisplayFilter"))
+					!= nullptr ? QStringLiteral("(with the item)") : QStringLiteral("(without)"));
+			});
+			// (a click's event comes through the viewport)
+			QContextMenuEvent rightClick(QContextMenuEvent::Mouse, QPoint(40, 10),
+				pane->viewport()->mapToGlobal(QPoint(40, 10)));
+			QCoreApplication::sendEvent(pane->viewport(), &rightClick);
+			DiffTextEdit::setContextMenuPresenterForTest({});
+			const int offeredFilters =
+				offered.indexOf(QStringLiteral(">") + FileCompareView::tr("Add to &Filters"));
+			check(offeredFilters >= 0 && offered.value(offeredFilters + 1) == QStringLiteral("-")
+				&& offered.size() > offeredFilters + 4
+				&& offered.constLast() == QStringLiteral("(with the item)"),
+				"right click: the pane's menu offers Add to Display Filter, above its own items");
+		}
+		{
+			// find passes over the hidden lines; a single copy is allowed,
+			// and what it writes stays hidden
+			fresh();
+			FileCompareView view;
+			open(view);
+			apply(view, QStringLiteral("extra"));
+			view.setCursorViewLineForTest(1, 7);
+			PaneSearch *search = view.paneSearchForTest(1);
+			search->editFind();
+			FindTextDialog *find = search->findDialog();
+			if (find == nullptr)
+				return 1;
+			const auto typeInto = [](QComboBox *field, const QString &text) {
+				field->lineEdit()->setText(text);
+				emit field->lineEdit()->textEdited(text);
+			};
+			messages.clear();
+			typeInto(find->findTextForTest(), QStringLiteral("zeta"));
+			find->findNextForTest()->click();
+			const int afterHidden = view.cursorViewLineForTest(1);
+			typeInto(find->findTextForTest(), QStringLiteral("error"));
+			find->findNextForTest()->click();
+			const int afterShown = view.cursorViewLineForTest(1);
+			find->reject();
+			check(afterHidden == 7 && afterShown == 7 && messages.size() == 1
+				&& view.paneForTest(1)->textCursor().selectedText() == QStringLiteral("error"),
+				"find: what a hidden line holds is not found");
+
+			view.gotoFirstDiff();
+			const int current = view.currentDiffForTest();
+			view.copyCurrentDiff(1, 0, false);
+			say("after copying the last difference, left", view.realLinesForTest(0));
+			check(current == 2 && view.realLinesForTest(0).mid(7) == list({ "extra error", "zeta" })
+				&& !view.paneForTest(0)->isLineHidden(7) && view.paneForTest(0)->isLineHidden(8)
+				&& view.shownLinesForTest(0) == list({ "extra error" }),
+				"Copy: one difference at a time is allowed, and its hidden lines stay hidden");
+		}
+
+		// --- the pane menu's "Add to Display Filter" ---
+		{
+			fresh();
+			FileCompareView view;
+			open(view);
+			QMenu menu;
+			view.buildPaneMenu(0, &menu);
+			QMenu *filters = nullptr;
+			int filtersAt = -1;
+			for (int k = 0; k < menu.actions().size() && filters == nullptr; ++k)
+				if (menu.actions().at(k)->menu() != nullptr)
+				{
+					filters = menu.actions().at(k)->menu();
+					filtersAt = k;
+				}
+			QAction *add = filters != nullptr
+				? filters->findChild<QAction *>(QStringLiteral("addToDisplayFilter")) : nullptr;
+			if (add == nullptr)
+				return 1;
+			check(filters->title() == FileCompareView::tr("Add to &Filters")
+				&& add->text() == FileCompareView::tr("Add to &Display Filter")
+				&& menu.actions().value(filtersAt + 1) != nullptr
+				&& menu.actions().value(filtersAt + 1)->isSeparator(),
+				"pane menu: Add to Filters, above Qt's items");
+			// the word at the cursor
+			view.setCursorViewLineForTest(0, 3);
+			add->trigger();
+			settle();
+			const QString byWord = view.displayFilter();
+			const QStringList gamma = view.shownLinesForTest(1);
+			// a selection within a line joins it with AND
+			apply(view, QStringLiteral("alpha"));
+			DiffTextEdit *pane = view.paneForTest(0);
+			view.addToDisplayFilter(QStringLiteral("say \"hi\""));
+			const QString quoted = view.displayFilter();
+			apply(view, QStringLiteral("o"));
+			QTextCursor selection(pane->document()->findBlockByNumber(1));
+			selection.setPosition(selection.position() + 5, QTextCursor::KeepAnchor);
+			pane->setTextCursor(selection);
+			QMenu again;
+			view.buildPaneMenu(0, &again);
+			again.findChild<QAction *>(QStringLiteral("addToDisplayFilter"))->trigger();
+			settle();
+			say("lines with o and ERROR, left", view.shownLinesForTest(0));
+			check(byWord == QStringLiteral("le:Line contains \"gamma\"") && gamma == list({ "gamma" })
+				&& quoted == QStringLiteral(
+					"le:Line contains \"alpha\" AND Line contains \"say \"\"hi\"\"\"")
+				&& view.displayFilter()
+					== QStringLiteral("le:Line contains \"o\" AND Line contains \"ERROR\"")
+				&& view.shownLinesForTest(0) == list({ "ERROR one", "ERROR two" })
+				&& view.displayFilterBarShown()
+				&& view.displayFilterBarForTest()->field()->isApplied(),
+				"Add to Display Filter: the word at the cursor or the selection, joined with AND");
+		}
+
+		// --- the "=" menu ---
+		{
+			using Menu = LineFilterMenu;
+			QWidget host;
+			Menu menu(&host);
+			// (the bars above made menus of their own: none has looked for
+			// the replace lists yet, which is what makes their folders)
+			const bool noFoldersYet = !QDir(lm::replaceListFolder(false)).exists()
+				&& !QDir(lm::replaceListFolder(true)).exists();
+			QStringList chosen;
+			int reopened = 0;
+			QObject::connect(&menu, &Menu::filterChosen, [&chosen](const QString &filter) {
+				chosen.append(filter);
+			});
+			QObject::connect(&menu, &Menu::reopenRequested, [&reopened]() { ++reopened; });
+			const auto made = [&menu](int command, const QString &filter = QString()) {
+				return menu.apply(command, filter).value_or(QStringLiteral("(nothing)"));
+			};
+			const auto t = [](const char *text) {
+				return QCoreApplication::translate("LineFilterMenu", text);
+			};
+			const QString errors = QStringLiteral("ERROR");
+			const QString expression = QStringLiteral("le:Line contains \"ERROR\"");
+
+			QStringList top;
+			for (const QAction *action : menu.actions())
+				top.append(action->isSeparator() ? QStringLiteral("-") : action->text());
+			int leaves = 0;
+			for (const QAction *action : menu.findChildren<QAction *>())
+				if (action->menu() == nullptr && !action->isSeparator())
+					++leaves;
+			const int submenus = static_cast<int>(menu.findChildren<QMenu *>().size());
+			printf("  %d items in %d submenus\n", leaves, submenus);
+			// the whole of upstream's IDR_POPUP_LINEFILTERMENU, a row a line: how
+			// deep, a popup, an item or a separator, and its text
+			const struct { int depth; char kind; const char *text; } resource[] = {
+				{ 1, 'I', "&Clear All" },
+				{ 1, 'S', "" },
+				{ 1, 'P', "Add L&ine Condition" },
+				{ 2, 'I', "L&ine Text..." },
+				{ 2, 'P', "&Column" },
+				{ 3, 'I', "&Text..." },
+				{ 3, 'I', "&Number..." },
+				{ 3, 'I', "&Date/Time..." },
+				{ 3, 'I', "Column: &1" },
+				{ 3, 'I', "Column: &2" },
+				{ 3, 'I', "Column: &3" },
+				{ 3, 'I', "Column: &4" },
+				{ 3, 'I', "Column: &5" },
+				{ 3, 'I', "Column: &6" },
+				{ 3, 'I', "Column: &7" },
+				{ 3, 'I', "Column: &8" },
+				{ 3, 'I', "Column: &9" },
+				{ 3, 'I', "Column: 1&0" },
+				{ 2, 'I', "Line L&ength..." },
+				{ 2, 'I', "&Word Count..." },
+				{ 2, 'P', "Line &Number" },
+				{ 3, 'I', "&Odd Lines" },
+				{ 3, 'I', "&Even Lines" },
+				{ 3, 'I', "&Custom Range..." },
+				{ 2, 'P', "Line &Status" },
+				{ 3, 'I', "Different" },
+				{ 3, 'I', "Identical" },
+				{ 3, 'I', "Trivial" },
+				{ 3, 'S', "" },
+				{ 3, 'I', "Exists" },
+				{ 3, 'I', "Missing" },
+				{ 3, 'I', "Moved" },
+				{ 3, 'I', "Bookmarked" },
+				{ 2, 'P', "&EOL" },
+				{ 3, 'I', "&Windows (CRLF)" },
+				{ 3, 'I', "&Unix (LF)" },
+				{ 3, 'I', "&Mac (CR)" },
+				{ 3, 'I', "None" },
+				{ 1, 'I', "Target: &Any (Left/Middle/Right)" },
+				{ 1, 'I', "Target: &Left" },
+				{ 1, 'I', "Target: &Middle" },
+				{ 1, 'I', "Target: &Right" },
+				{ 1, 'S', "" },
+				{ 1, 'P', "Add &Difference Condition" },
+				{ 2, 'P', "L&ine Text" },
+				{ 3, 'I', "Equal" },
+				{ 3, 'I', "Not Equal" },
+				{ 2, 'P', "&Column" },
+				{ 3, 'P', "&Text" },
+				{ 4, 'I', "Equal" },
+				{ 4, 'I', "Not Equal" },
+				{ 3, 'P', "&Number" },
+				{ 4, 'I', "Equal" },
+				{ 4, 'I', "Not Equal" },
+				{ 4, 'I', "Less Than" },
+				{ 4, 'I', "Less Than or Equal to" },
+				{ 4, 'I', "Greater Than" },
+				{ 4, 'I', "Greater Than or Equal to" },
+				{ 3, 'P', "&Date/Time" },
+				{ 4, 'I', "Equal" },
+				{ 4, 'I', "Not Equal" },
+				{ 4, 'I', "Less Than" },
+				{ 4, 'I', "Less Than or Equal to" },
+				{ 4, 'I', "Greater Than" },
+				{ 4, 'I', "Greater Than or Equal to" },
+				{ 3, 'I', "Column: &1" },
+				{ 3, 'I', "Column: &2" },
+				{ 3, 'I', "Column: &3" },
+				{ 3, 'I', "Column: &4" },
+				{ 3, 'I', "Column: &5" },
+				{ 3, 'I', "Column: &6" },
+				{ 3, 'I', "Column: &7" },
+				{ 3, 'I', "Column: &8" },
+				{ 3, 'I', "Column: &9" },
+				{ 3, 'I', "Column: 1&0" },
+				{ 2, 'P', "Line L&ength" },
+				{ 3, 'I', "Equal" },
+				{ 3, 'I', "Not Equal" },
+				{ 3, 'I', "Less Than" },
+				{ 3, 'I', "Less Than or Equal to" },
+				{ 3, 'I', "Greater Than" },
+				{ 3, 'I', "Greater Than or Equal to" },
+				{ 3, 'S', "" },
+				{ 3, 'I', "Less than 10" },
+				{ 3, 'I', "10 or more" },
+				{ 3, 'I', "Less than 100" },
+				{ 3, 'I', "100 or more" },
+				{ 3, 'I', "Less than 1000" },
+				{ 3, 'I', "1000 or more" },
+				{ 3, 'I', "Custom Range..." },
+				{ 2, 'P', "Line &Status" },
+				{ 3, 'I', "Different" },
+				{ 3, 'I', "Identical" },
+				{ 3, 'I', "Trivial" },
+				{ 2, 'P', "&EOL" },
+				{ 3, 'I', "Equal" },
+				{ 3, 'I', "Not Equal" },
+				{ 1, 'I', "Target: &Left and Right" },
+				{ 1, 'I', "Target: Left and &Middle" },
+				{ 1, 'I', "Target: Middle and &Right" },
+				{ 1, 'I', "Target: &All" },
+				{ 1, 'S', "" },
+				{ 1, 'P', "&Transform Line/Column" },
+				{ 2, 'I', "&Trim" },
+				{ 2, 'I', "Normalize &Whitespace" },
+				{ 2, 'I', "&Replace" },
+				{ 2, 'I', "Reg&ex Replace" },
+				{ 2, 'I', "&Lowercase" },
+				{ 2, 'I', "&Uppercase" },
+				{ 2, 'I', "&Half-width" },
+				{ 2, 'I', "&Full-width" },
+				{ 2, 'I', "Normalize &Unicode" },
+				{ 2, 'P', "&Chinese Conversion" },
+				{ 3, 'I', "&Simplified Chinese" },
+				{ 3, 'I', "&Traditional Chinese" },
+				{ 2, 'P', "&Japanese Conversion" },
+				{ 3, 'I', "&Hiragana" },
+				{ 3, 'I', "&Katakana" },
+				{ 2, 'P', "Replace &Lists" },
+				{ 3, 'I', "&Create String Replace List and Insert..." },
+				{ 3, 'I', "Create &Regex Replace List and Insert..." },
+				{ 3, 'S', "" },
+				{ 3, 'P', "&String Replace Lists" },
+				{ 4, 'I', "<None>" },
+				{ 3, 'P', "Re&gex Replace Lists" },
+				{ 4, 'I', "<None>" },
+				{ 3, 'S', "" },
+				{ 3, 'I', "Open String Replace Lists Folder..." },
+				{ 3, 'I', "Open Regex Replace Lists Folder..." },
+				{ 1, 'P', "&Refine Current Filter" },
+				{ 2, 'P', "Add Con&text Lines" },
+				{ 3, 'I', "&0 Lines" },
+				{ 3, 'I', "&1 Line" },
+				{ 3, 'I', "&3 Lines" },
+				{ 3, 'I', "&5 Lines" },
+				{ 3, 'I', "&7 Lines" },
+				{ 2, 'P', "Filter by &Occurrence" },
+				{ 3, 'I', "&First" },
+				{ 3, 'I', "&Last" },
+				{ 3, 'I', "First &5 Matches" },
+				{ 3, 'I', "After First &5" },
+				{ 3, 'I', "&Custom Range..." },
+				{ 3, 'S', "" },
+				{ 3, 'I', "By &Block" },
+				{ 2, 'P', "&Range" },
+				{ 3, 'I', "&Inside..." },
+				{ 3, 'I', "&Outside..." },
+				{ 1, 'P', "Create &Range" },
+				{ 2, 'I', "&Inside..." },
+				{ 2, 'I', "&Outside..." },
+				{ 1, 'S', "" },
+				{ 1, 'I', "Match &case" },
+				{ 1, 'S', "" },
+				{ 1, 'I', "Combine: A&ND" },
+				{ 1, 'I', "Combine: &OR" },
+			};
+			QStringList wanted;
+			for (const auto &row : resource)
+				wanted.append(QString(row.depth, QLatin1Char(' ')) + QLatin1Char(row.kind)
+					+ (row.kind == 'S' ? QString() : t(row.text)));
+			QStringList built;
+			const std::function<void(const QMenu *, int)> walk = [&](const QMenu *popup, int depth)
+			{
+				for (const QAction *action : popup->actions())
+				{
+					const QString indent(depth, QLatin1Char(' '));
+					if (action->isSeparator())
+						built.append(indent + QLatin1Char('S'));
+					else if (action->menu() != nullptr)
+					{
+						built.append(indent + QLatin1Char('P') + action->text());
+						walk(action->menu(), depth + 1);
+					}
+					else
+						built.append(indent + QLatin1Char('I') + action->text());
+				}
+			};
+			walk(&menu, 1);
+			for (int row = 0; row < qMax(wanted.size(), built.size()); ++row)
+				if (wanted.value(row) != built.value(row))
+				{
+					printf("  row %d: upstream has [%s], the menu [%s]\n", row,
+						qPrintable(wanted.value(row)), qPrintable(built.value(row)));
+					break;
+				}
+			check(wanted == built, "menu: every popup, item and separator of upstream's, in its order");
+			check(top == QStringList{ t("&Clear All"), QStringLiteral("-"), t("Add L&ine Condition"),
+					t("Target: &Any (Left/Middle/Right)"), t("Target: &Left"), t("Target: &Middle"),
+					t("Target: &Right"), QStringLiteral("-"), t("Add &Difference Condition"),
+					t("Target: &Left and Right"), t("Target: Left and &Middle"),
+					t("Target: Middle and &Right"), t("Target: &All"), QStringLiteral("-"),
+					t("&Transform Line/Column"), t("&Refine Current Filter"), t("Create &Range"),
+					QStringLiteral("-"), t("Match &case"), QStringLiteral("-"), t("Combine: A&ND"),
+					t("Combine: &OR") }
+				&& leaves == 120 && submenus == 25,
+				"menu: upstream's items, in its order");
+
+			// conditions join the filter with the operator in use
+			check(made(Menu::MaskClear, errors).isEmpty()
+				&& made(Menu::LineOdd) == QStringLiteral("le:(LineNumber % 2) = 1")
+				&& made(Menu::LineEven, errors)
+					== QStringLiteral("le:Line contains \"ERROR\" AND (LineNumber % 2) = 0")
+				&& made(Menu::LineDifferent, expression) == expression + QStringLiteral(" AND Different")
+				&& made(Menu::LineIdentical) == QStringLiteral("le:Identical")
+				&& made(Menu::LineTrivial) == QStringLiteral("le:Trivial")
+				&& made(Menu::LineExists) == QStringLiteral("le:Exists")
+				&& made(Menu::LineMissing) == QStringLiteral("le:Missing")
+				&& made(Menu::LineMoved) == QStringLiteral("le:Moved")
+				&& made(Menu::LineBookmarked) == QStringLiteral("le:Bookmarked")
+				&& made(Menu::EolCrLf) == QStringLiteral("le:EOLStr = \"CRLF\"")
+				&& made(Menu::EolNone) == QStringLiteral("le:EOLStr = \"None\""),
+				"line conditions: joined to the filter, a text to find turned into its expression");
+
+			// the targets, the operator and the column are kept, and the menu
+			// comes back
+			menu.pickForTest(Menu::ConditionLeft);
+			menu.pickForTest(Menu::OperatorOr);
+			const QString leftOr = made(Menu::LineExists, expression);
+			const QString leftNumber = made(Menu::LineOdd);
+			const bool ticks = menu.actionForTest(Menu::ConditionLeft)->isChecked()
+				&& !menu.actionForTest(Menu::ConditionAny)->isChecked()
+				&& menu.actionForTest(Menu::OperatorOr)->isChecked()
+				&& !menu.actionForTest(Menu::OperatorAnd)->isChecked();
+			menu.pickForTest(Menu::ConditionRight);
+			const QString rightEol = made(Menu::EolLf);
+			menu.pickForTest(Menu::ConditionAny);
+			menu.pickForTest(Menu::OperatorAnd);
+			printf("  %s | %s | %s | reopened %d times\n", qPrintable(leftOr), qPrintable(leftNumber),
+				qPrintable(rightEol), reopened);
+			check(leftOr == expression + QStringLiteral(" OR LeftExists")
+				&& leftNumber == QStringLiteral("le:(LeftLineNumber % 2) = 1")
+				&& rightEol == QStringLiteral("le:RightEOLStr = \"LF\"")
+				&& ticks && reopened == 5 && chosen.isEmpty(),
+				"targets and operator: kept, ticked, and the menu comes back");
+
+			// differences between two sides, or among all of them
+			const QString lineEqual = made(Menu::DiffLineEqual);
+			const QString lengthClose = made(Menu::DiffLineLengthFirst + 6);
+			const QString eolDiffers = made(Menu::DiffEolNotEqual);
+			const QString columnText = made(Menu::DiffColumnFirst + 1);
+			menu.pickForTest(Menu::Column1 + 2);
+			const QString columnNumber = made(Menu::DiffColumnNumberLess);
+			const bool lessShown = menu.actionForTest(Menu::DiffColumnNumberLess)->isVisible();
+			menu.pickForTest(Menu::ConditionDiffLeftMiddle);
+			const QString leftMiddle = made(Menu::DiffLineNotEqual);
+			menu.pickForTest(Menu::ConditionDiffAll);
+			const QString allLines = made(Menu::DiffLineEqual);
+			const QString allLength = made(Menu::DiffLineLengthFirst + 1);
+			const QString allNumber = made(Menu::DiffColumnFirst + 3);
+			const QString allEol = made(Menu::DiffEolEqual);
+			const bool lessHidden = !menu.actionForTest(Menu::DiffColumnNumberLess)->isVisible()
+				&& !menu.actionForTest(Menu::DiffColumnDateTimeLess)->isVisible()
+				&& menu.actionForTest(Menu::DiffColumnFirst + 2)->isVisible()
+				&& menu.actionForTest(Menu::DiffLineLengthFirst + 2)->isVisible();
+			menu.pickForTest(Menu::ConditionDiffLeftRight);
+			menu.pickForTest(Menu::Column1);
+			printf("  %s | %s | %s\n", qPrintable(columnNumber), qPrintable(allNumber),
+				qPrintable(allLength));
+			check(lineEqual == QStringLiteral("le:LeftLine = RightLine")
+				&& lengthClose == QStringLiteral("le:abs(LeftLineLength - RightLineLength) < 10")
+				&& eolDiffers == QStringLiteral("le:LeftEOL != RightEOL")
+				&& columnText == QStringLiteral("le:LeftColumn1 != RightColumn1")
+				&& columnNumber == QStringLiteral("le:toNumber(LeftColumn3) < toNumber(RightColumn3)")
+				&& leftMiddle == QStringLiteral("le:LeftLine != MiddleLine")
+				&& allLines == QStringLiteral("le:allequal(Line)")
+				&& allLength == QStringLiteral("le:not allequal(LineLength)")
+				&& allNumber == QStringLiteral("le:not allequal(toNumber(Column3))")
+				&& allEol == QStringLiteral("le:allequal(EOL)") && lessShown && lessHidden,
+				"difference conditions: between two sides, or among all of them");
+
+			// what the conditions look at, transformed
+			const QString trimmed = made(Menu::FuncFirst, expression);
+			const QString lowered = made(Menu::FuncFirst + 4,
+				QStringLiteral("le:LeftLine = RightLine and Column2 contains \"a(b\""));
+			const QString spaced = made(Menu::FuncFirst + 1, QString());
+			const QString nested = made(Menu::FuncFirst + 5,
+				QStringLiteral("le:@cs replace(Line, \"Line\", \"x\") = LineAt(1)"));
+			printf("  %s\n  %s\n  %s\n", qPrintable(lowered), qPrintable(spaced), qPrintable(nested));
+			check(trimmed == QStringLiteral("le:trim(Line) contains \"ERROR\"")
+				&& lowered == QStringLiteral(
+					"le:toLower(LeftLine) = toLower(RightLine) and toLower(Column2) contains \"a(b\"")
+				&& spaced == QStringLiteral("le:regexReplace(Line, \"[ \\t]+\", \" \")")
+				&& nested == QStringLiteral(
+					"le:@cs replace(toUpper(Line), \"Line\", \"x\") = toUpper(LineAt(1))"),
+				"transformations: around every line or column text, strings left alone");
+
+			// the filter as a whole, refined
+			const QString context = made(Menu::LineContextFirst + 2, errors);
+			const QString firstMatch = made(Menu::MatchNumberFirst, errors);
+			const QString lastMatch = made(Menu::MatchNumberFirst + 1, expression);
+			menu.pickForTest(Menu::OccurrenceByBlock);
+			const QString byBlock = made(Menu::MatchNumberFirst + 3, QStringLiteral("le:@cs Different"));
+			const bool blockTicked = menu.actionForTest(Menu::OccurrenceByBlock)->isChecked();
+			menu.pickForTest(Menu::OccurrenceByBlock);
+			const QString sensitive = made(Menu::MatchCase, errors);
+			const QString insensitive = made(Menu::MatchCase, sensitive);
+			menu.setFilterSource([&sensitive]() { return sensitive; });
+			emit menu.aboutToShow(); // (what it looks at as it opens)
+			const bool caseTicked = menu.actionForTest(Menu::MatchCase)->isChecked();
+			shoot(&menu, "menu");
+			menu.setFilterSource([&expression]() { return expression; });
+			check(context == QStringLiteral("le:matchContext(Line contains \"ERROR\", 3, 3)")
+				&& firstMatch == QStringLiteral("le:matchNumber(Line contains \"ERROR\") = 1")
+				&& lastMatch == QStringLiteral("le:matchNumber(Line contains \"ERROR\") = "
+					"matchCount(Line contains \"ERROR\")")
+				&& byBlock == QStringLiteral("le:@cs matchBlockNumber(Different) > 5") && blockTicked
+				&& sensitive == QStringLiteral("le:@cs Line contains \"ERROR\"")
+				&& insensitive == expression && caseTicked,
+				"refinements: context lines, occurrences and Match case, on the whole filter");
+
+			// everything the menu makes without asking parses
+			int parsed = 0;
+			QStringList broken;
+			const auto sweep = [&](const QString &from) {
+				for (int command = Menu::MaskClear; command <= Menu::OperatorOr; ++command)
+				{
+					const bool asks = command == Menu::LineRange || command == Menu::LineLengthRange
+						|| command == Menu::WordCountRange
+						|| (command >= Menu::ColumnText && command <= Menu::ColumnDateTime)
+						|| command == Menu::LineNumberRange || command == Menu::DiffLineLengthRange
+						|| command == Menu::MatchNumberRange
+						|| (command >= Menu::MatchInsideWrap && command <= Menu::MatchOutside)
+						|| (command >= Menu::CreateReplaceList
+							&& command <= Menu::RegexReplaceListLast);
+					// (a refinement is of a filter there is: of none, upstream
+					// leaves its frame to be filled in)
+					const bool refines = (command >= Menu::LineContextFirst
+						&& command <= Menu::MatchNumberLast) || command == Menu::MatchCase;
+					const QAction *item = menu.actionForTest(command);
+					if (asks || (refines && from.isEmpty()) || (item != nullptr && !item->isVisible()))
+						continue;
+					const std::optional<QString> filter = menu.apply(command, from);
+					if (!filter.has_value() || filter->isEmpty())
+						continue;
+					LineFilterHelper helper;
+					if (helper.SetStringOrExpression(filter->toStdString()))
+						++parsed;
+					else
+						broken.append(*filter);
+				}
+			};
+			for (int side = Menu::ConditionAny; side <= Menu::ConditionRight; ++side)
+				for (int pair = Menu::ConditionDiffLeftRight; pair <= Menu::ConditionDiffAll; ++pair)
+				{
+					menu.pickForTest(side);
+					menu.pickForTest(pair);
+					sweep(QString());
+					sweep(expression);
+				}
+			menu.pickForTest(Menu::ConditionAny);
+			menu.pickForTest(Menu::ConditionDiffLeftRight);
+			printf("  %d filters made\n", parsed);
+			for (const QString &filter : broken)
+				printf("  not parsed: %s\n", qPrintable(filter));
+			check(parsed > 1500 && broken.isEmpty(), "engine: every filter the menu makes parses");
+			// (of no filter, a refinement is its frame, as upstream has it,
+			// and Match case comes before the conditions it is for)
+			const QString caseFirst = made(Menu::MatchCase);
+			check(made(Menu::LineContextFirst + 1) == QStringLiteral("le:matchContext(, 1, 1)")
+				&& made(Menu::MatchNumberFirst) == QStringLiteral("le:matchNumber() = 1")
+				&& made(Menu::LineDifferent, caseFirst) == QStringLiteral("le:@cs Different"),
+				"refinements of no filter: upstream's frames, and Match case ahead of a condition");
+
+			// --- the items that ask: the Filter Condition dialog ---
+			const auto answer = [&host](const QString &value, QString *lhs = nullptr)
+			{
+				QTimer::singleShot(0, &host, [&host, value, lhs]() {
+					auto *dialog = host.findChild<FilterConditionDialog *>();
+					if (dialog == nullptr)
+					{
+						printf("no Filter Condition dialog to answer\n");
+						std::exit(3);
+					}
+					if (lhs != nullptr)
+						*lhs = dialog->findChild<QLabel *>(QStringLiteral("conditionLhs"))->text();
+					if (!value.isEmpty())
+						dialog->findChild<QComboBox *>(QStringLiteral("conditionValue1"))
+							->setEditText(value);
+					dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+				});
+			};
+			answer(QStringLiteral("x"));
+			const QString byText = made(Menu::LineRange);
+			answer(QStringLiteral("10"));
+			const QString byLength = made(Menu::LineLengthRange, expression);
+			answer(QString());
+			const QString byWords = made(Menu::WordCountRange);
+			menu.pickForTest(Menu::Column1 + 1);
+			answer(QStringLiteral("7"));
+			const QString byColumn = made(Menu::ColumnNumber);
+			answer(QStringLiteral("x"));
+			const QString byColumnText = made(Menu::ColumnText);
+			menu.pickForTest(Menu::Column1);
+			answer(QStringLiteral("2"));
+			const QString byNumber = made(Menu::LineNumberRange);
+			QString occurrenceLhs;
+			answer(QStringLiteral("1"), &occurrenceLhs);
+			const QString byOccurrence = made(Menu::MatchNumberRange,
+				QStringLiteral("le:(LineNumber % 2) = 1"));
+			answer(QStringLiteral("3"));
+			const QString byLengthGap = made(Menu::DiffLineLengthRange);
+			printf("  %s | %s | %s\n", qPrintable(byWords), qPrintable(byColumn),
+				qPrintable(byOccurrence));
+			check(byText == QStringLiteral("le:Line contains \"x\"")
+				&& byLength == expression + QStringLiteral(" AND LineLength = 10")
+				&& byWords == QStringLiteral("le:regexCount(Line, \"\\S+\") = 0")
+				&& byColumn == QStringLiteral("le:toNumber(Column2) = 7")
+				&& byColumnText == QStringLiteral("le:Column2 contains \"x\"")
+				&& byNumber == QStringLiteral("le:LineNumber > 2")
+				&& occurrenceLhs == QStringLiteral("matchNumber((LineNumber % 2) = 1)")
+				&& byOccurrence == QStringLiteral("le:matchNumber((LineNumber % 2) = 1) > 1")
+				&& byLengthGap == QStringLiteral("le:abs(LeftLineLength - RightLineLength) = 3"),
+				"conditions asked for: in the Filter Condition dialog, by the kind of value");
+
+			// --- ranges: the Match Inside/Outside dialog ---
+			QStringList found;
+			const auto range = [&](const QString &start, const QString &end)
+			{
+				QTimer::singleShot(0, &host, [&host, &found, &shoot, start, end]() {
+					auto *dialog = host.findChild<MatchInsideDialog *>();
+					if (dialog == nullptr)
+					{
+						printf("no Match Inside/Outside dialog to answer\n");
+						std::exit(3);
+					}
+					auto *first = dialog->findChild<FileFilterCombo *>(
+						QStringLiteral("matchInsideStart"));
+					auto *second = dialog->findChild<FileFilterCombo *>(
+						QStringLiteral("matchInsideEnd"));
+					found = QStringList{ first->mask(), second->mask() };
+					if (start != QStringLiteral("(as it is)"))
+					{
+						first->setEditText(start);
+						second->setEditText(end);
+					}
+					shoot(dialog, "range");
+					dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+				});
+			};
+			range(QStringLiteral("BEGIN"), QStringLiteral("le:@cs Line = \"END\""));
+			const QString inside = made(Menu::MatchInside, errors);
+			// (its fields start with the latest filter the bar applied)
+			const QStringList fieldsAtFirst = found;
+			range(QString(), QString());
+			const QString outside = made(Menu::MatchOutside);
+			range(QStringLiteral("(as it is)"), QString());
+			const QString wrapped = made(Menu::MatchInsideWrap, errors);
+			const QStringList fieldsWrapped = found;
+			printf("  %s\n  %s\n", qPrintable(inside), qPrintable(outside));
+			check(inside == QStringLiteral("le:@cs Line contains \"ERROR\" AND "
+					"matchInside(Line contains \"BEGIN\", Line = \"END\")")
+				&& outside == QStringLiteral(
+					"le:not matchInside(Line contains \"BEGIN\", Line contains \"END\")")
+				&& wrapped == QStringLiteral(
+					"le:matchInside(Line contains \"ERROR\", Line contains \"ERROR\")")
+				&& fieldsAtFirst.size() == 2 && fieldsAtFirst.at(0) == fieldsAtFirst.at(1)
+				&& !fieldsAtFirst.at(0).isEmpty()
+				&& fieldsWrapped == QStringList{ errors, errors },
+				"ranges: the two filters asked for in their dialog");
+
+			// the "=" of a field of that dialog: a menu of its own, which comes
+			// back after a target is picked, the pick kept, and whose condition
+			// lands in the field
+			bool menuShown = false;
+			bool menuBack = false;
+			QString fieldAfter;
+			QTimer::singleShot(0, &host, [&]() {
+				auto *dialog = host.findChild<MatchInsideDialog *>();
+				auto *button = dialog != nullptr
+					? dialog->findChild<QToolButton *>(QStringLiteral("matchInsideStartMenu")) : nullptr;
+				if (button == nullptr)
+				{
+					printf("no Match Inside/Outside dialog with its \"=\" button\n");
+					std::exit(3);
+				}
+				auto *field = dialog->findChild<FileFilterCombo *>(QStringLiteral("matchInsideStart"));
+				field->setEditText(QStringLiteral("BEGIN"));
+				button->click();
+				// (a menu is told from its aboutToShow that it opens: on screen
+				// it lasts only while the application is the one in front)
+				auto *popup = dialog->findChild<Menu *>();
+				menuShown = popup != nullptr;
+				int shows = 0;
+				if (popup != nullptr)
+				{
+					QObject::connect(popup, &QMenu::aboutToShow, [&shows]() { ++shows; });
+					// as a click on an item goes: the menu closes, then the item acts
+					popup->close();
+					popup->actionForTest(Menu::ConditionLeft)->trigger();
+				}
+				settle();
+				auto *again = dialog->findChild<Menu *>();
+				menuBack = again != nullptr && again == popup && shows == 1
+					&& again->actionForTest(Menu::ConditionLeft)->isChecked();
+				if (again != nullptr)
+				{
+					again->close();
+					again->actionForTest(Menu::LineExists)->trigger();
+				}
+				settle();
+				menuBack = menuBack && shows == 1; // (a condition does not bring it back)
+				fieldAfter = field->mask();
+				dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Cancel)->click();
+			});
+			const QString cancelledRange = made(Menu::MatchInside, errors);
+			printf("  the field after its menu: %s\n", qPrintable(fieldAfter));
+			check(menuShown && menuBack
+				&& fieldAfter == QStringLiteral("le:Line contains \"BEGIN\" AND LeftExists")
+				&& cancelledRange == QStringLiteral("(nothing)"),
+				"ranges: a field's \"=\" menu comes back after a target, and fills the field");
+
+			// --- replace lists ---
+			const QString listFolder = lm::replaceListFolder(false);
+			emit menu.aboutToShow();
+			const bool foldersMade = noFoldersYet && QDir(listFolder).exists()
+				&& QDir(lm::replaceListFolder(true)).exists();
+			QStringList none;
+			for (const QMenu *sub : menu.findChildren<QMenu *>())
+				if (sub->title() == t("&String Replace Lists") || sub->title() == t("Re&gex Replace Lists"))
+					for (const QAction *action : sub->actions())
+						none.append(action->text() + (action->isEnabled() ? "" : " (off)"));
+			const QString newList = QDir(listFolder).filePath(QStringLiteral("errors.tsv"));
+			lm::setReplaceListChooserForTest([&newList](const QString &, bool) { return newList; });
+			const QString created = made(Menu::CreateReplaceList, expression);
+			const bool written = QFile::exists(newList) && opened == QStringList{ newList };
+			write(newList, "# what the errors are called\nERROR\tfailure\n");
+			lm::setReplaceListChooserForTest([](const QString &, bool) { return QString(); });
+			const QString cancelled = made(Menu::CreateRegexReplaceList, expression);
+			emit menu.aboutToShow();
+			const QAction *listed = menu.actionForTest(Menu::StringReplaceListFirst);
+			const QString listedName = listed != nullptr ? listed->text() : QString();
+			const QString picked = made(Menu::StringReplaceListFirst,
+				QStringLiteral("le:Line contains \"failure\""));
+			opened.clear();
+			const bool folderOnly = !menu.apply(Menu::RegexReplaceListsFolder, expression).has_value()
+				&& opened == QStringList{ lm::replaceListFolder(true) };
+			printf("  %s\n", qPrintable(picked));
+			check(none == QStringList{ t("<None>") + QStringLiteral(" (off)"),
+					t("<None>") + QStringLiteral(" (off)") }
+				&& created == QStringLiteral("le:replaceWithList(Line, \"%1\") contains \"ERROR\"")
+					.arg(newList)
+				&& foldersMade && written && cancelled == QStringLiteral("(nothing)")
+				&& listedName == QStringLiteral("errors.tsv")
+				&& picked == QStringLiteral("le:replaceWithList(Line, \"%1\") contains \"failure\"")
+					.arg(newList)
+				&& folderOnly
+				&& lm::replaceListPathForExpression(QDir::homePath() + QStringLiteral("/a/b.tsv"))
+					== QStringLiteral("%HOME%/a/b.tsv"),
+				"replace lists: made from the template, listed, and written into the filter");
+
+			// the engine reads the list: ERROR is "failure" to the filter
+			fresh();
+			FileCompareView view;
+			open(view);
+			apply(view, picked);
+			const QStringList anyCase = view.shownLinesForTest(1);
+			apply(view, made(Menu::MatchCase, picked));
+			const QStringList sameCase = view.shownLinesForTest(1);
+			// (a list's path may name a variable of the environment, as the
+			// one the menu writes for a list under the home folder does)
+			qputenv("MERGEDESK_SELFTEST_LISTS", QFile::encodeName(listFolder));
+			apply(view, QStringLiteral("le:replaceWithList(Line, "
+				"\"%MERGEDESK_SELFTEST_LISTS%/errors.tsv\") contains \"failure\""));
+			say("lines whose ERROR reads failure, right", anyCase);
+			say("the same, matching case", sameCase);
+			check(view.shownLinesForTest(0) == list({ "ERROR one", "ERROR two" })
+				&& anyCase == list({ "ERROR one", "extra error" })
+				&& sameCase == list({ "ERROR one" }) && view.shownLinesForTest(1) == anyCase,
+				"replace lists: applied by the engine, by the filter's case rule");
+			apply(view, picked);
+
+			// --- where the menu lives: the bar's "=" ---
+			DisplayFilterBar *bar = view.displayFilterBarForTest();
+			auto *barMenu = qobject_cast<Menu *>(bar->menuForTest());
+			if (barMenu == nullptr)
+				return 1;
+			bar->field()->setEditText(QStringLiteral("zeta"));
+			barMenu->pickForTest(Menu::LineDifferent);
+			const QString inField = bar->field()->mask();
+			const bool notYet = view.displayFilter() == picked && !bar->field()->isApplied();
+			bar->findChild<QPushButton *>(QStringLiteral("displayFilterApply"))->click();
+			settle();
+			check(inField == QStringLiteral("le:Line contains \"zeta\" AND Different") && notYet
+				&& view.displayFilter() == inField && view.shownLinesForTest(1) == list({ "zeta" }),
+				"\"=\": its menu changes the bar's field, for Apply to take");
+			// the button opens it, and a pick of how conditions join brings it
+			// back, the pick kept for as long as the bar is there
+			int shows = 0;
+			QObject::connect(barMenu, &QMenu::aboutToShow, [&shows]() { ++shows; });
+			bar->findChild<QToolButton *>(QStringLiteral("displayFilterMaskMenu"))->click();
+			const bool opened = shows == 1;
+			barMenu->close(); // as a click on an item goes: the menu closes, the item acts
+			barMenu->actionForTest(Menu::OperatorOr)->trigger();
+			settle();
+			const bool back = shows == 2 && barMenu->actionForTest(Menu::OperatorOr)->isChecked();
+			barMenu->close();
+			barMenu->actionForTest(Menu::LineTrivial)->trigger();
+			settle();
+			barMenu->close();
+			check(opened && back && shows == 2
+				&& bar->field()->mask() == inField + QStringLiteral(" OR Trivial"),
+				"\"=\": the menu comes back after a pick of the operator, which it keeps");
+		}
+
+		// --- three files, each with a line of its own ---
+		{
+			const QString paths[3] = { dir.filePath(QStringLiteral("a.txt")),
+				dir.filePath(QStringLiteral("b.txt")), dir.filePath(QStringLiteral("c.txt")) };
+			write(paths[0], "s0\nA left\ns1\nB\ns2\nC\ns3\n");
+			write(paths[1], "s0\nA\ns1\nB middle\ns2\nC\ns3\n");
+			write(paths[2], "s0\nA\ns1\nB\ns2\nC right\ns3\n");
+			FileCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ paths[0], paths[1], paths[2] }, &error))
+			{
+				printf("3-way compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			settle();
+			const auto shownBy = [&](const char *filter) {
+				apply(view, QLatin1String(filter));
+				return view.shownLinesForTest(0) + view.shownLinesForTest(1) + view.shownLinesForTest(2);
+			};
+			const QStringList leftMiddle = shownBy("le:DifferentLeftMiddle");
+			const QStringList middleRight = shownBy("le:DifferentMiddleRight");
+			const QStringList leftRight = shownBy("le:DifferentLeftRight");
+			const QStringList middleText = shownBy("le:MiddleLine contains \"middle\"");
+			const QStringList identical = shownBy("le:Identical");
+			say("left and middle differ", leftMiddle);
+			say("middle and right differ", middleRight);
+			say("left and right differ", leftRight);
+			check(view.paneCount() == 3 && view.diffCount() == 3
+				&& leftMiddle == list({ "A left", "B", "A", "B middle", "A", "B" })
+				&& middleRight == list({ "B", "C", "B middle", "C", "B", "C right" })
+				&& leftRight == list({ "A left", "C", "A", "C", "A", "C right" })
+				&& middleText == list({ "B", "B middle", "B" })
+				&& identical == list({ "s0", "s1", "s2", "s3", "s0", "s1", "s2", "s3", "s0", "s1",
+					"s2", "s3" }),
+				"three files: which sides differ, a side's own text, in every pane");
+		}
+
+		// --- moved lines and ignored differences ---
+		{
+			const QString movedLeft = dir.filePath(QStringLiteral("moved-left.txt"));
+			const QString movedRight = dir.filePath(QStringLiteral("moved-right.txt"));
+			write(movedLeft, "one\ntwo\nthree\nfour\nfive\nsix\n\nmoved block line 1\n"
+				"moved block line 2\nmoved block line 3\nseven\n");
+			write(movedRight, "moved block line 1\nmoved block line 2\nmoved block line 3\none\ntwo\n"
+				"three\nfour\nfive\nsix\nseven\n");
+			lm::setCompareFlagForTest(OPT_CMP_MOVED_BLOCKS, true);
+			lm::setCompareFlagForTest(OPT_CMP_IGNORE_BLANKLINES, true);
+			FileCompareView view;
+			QString error;
+			if (!view.compare(movedLeft, movedRight, &error))
+				return 2;
+			settle();
+			apply(view, QStringLiteral("le:Moved"));
+			const QStringList moved = view.shownLinesForTest(0);
+			apply(view, QStringLiteral("le:Trivial"));
+			const QStringList trivial = view.shownLinesForTest(0);
+			say("moved, left", moved);
+			say("trivial, left", trivial);
+			lm::setCompareFlagForTest(OPT_CMP_MOVED_BLOCKS, false);
+			lm::setCompareFlagForTest(OPT_CMP_IGNORE_BLANKLINES, false);
+			check(moved == list({ "moved block line 1", "moved block line 2", "moved block line 3" })
+				&& trivial == QStringList{ QString() } && view.ignoredDiffCount() == 1,
+				"line status: moved lines and ignored differences are told apart");
+		}
+
+		// --- a table: its rows for lines, a row's cells for its columns ---
+		const QString leftTable = dir.filePath(QStringLiteral("left.csv"));
+		const QString rightTable = dir.filePath(QStringLiteral("right.csv"));
+		//   0 id,name,price    id,name,price   (the header's row)
+		//   1 1,apple,10       1,apple,11
+		//   2 2,banana,20      2,banana,20
+		//   3 3,cherry,30      3,cereja,30
+		//   4 4,date,40        5,elder,50
+		//   5 -                6,fig,60
+		//   6 9,"x,y",90       9,"x,y",90
+		write(leftTable, "id,name,price\n1,apple,10\n2,banana,20\n3,cherry,30\n4,date,40\n"
+			"9,\"x,y\",90\n");
+		write(rightTable, "id,name,price\n1,apple,11\n2,banana,20\n3,cereja,30\n5,elder,50\n"
+			"6,fig,60\n9,\"x,y\",90\n");
+		const auto applyTable = [&settle](TableCompareView &table, const QString &text)
+		{
+			table.showDisplayFilterBar();
+			DisplayFilterBar *bar = table.displayFilterBarForTest();
+			bar->field()->setEditText(text);
+			emit bar->field()->lineEdit()->textEdited(text); // as typed
+			bar->findChild<QPushButton *>(QStringLiteral("displayFilterApply"))->click();
+			settle();
+		};
+		{
+			TableCompareView view;
+			view.resize(900, 400);
+			QString error;
+			if (!view.compare(leftTable, rightTable, &error))
+			{
+				printf("table compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			settle();
+			const QStringList allLeft = view.shownRowsForTest(0);
+			const QStringList allRight = view.shownRowsForTest(1);
+			check(view.diffCount() == 2 && allLeft.size() == 6 && allRight.size() == 6
+				&& allLeft.value(4).isEmpty() && !view.displayFilterBarShown()
+				&& view.displayFilter().isEmpty(),
+				"table, start: two differences, six rows under the header's, no bar");
+
+			// a text to find, and the differences
+			applyTable(view, QStringLiteral("BANANA"));
+			const QStringList banana = view.shownRowsForTest(0) + view.shownRowsForTest(1);
+			const bool applied = view.displayFilterBarForTest()->field()->isApplied()
+				&& view.displayFilter() == QStringLiteral("BANANA")
+				&& lm::fileFilterHistory(historyKey).value(0) == QStringLiteral("BANANA");
+			applyTable(view, QStringLiteral("le:Different"));
+			say("table, different, left", view.shownRowsForTest(0));
+			say("table, different, right", view.shownRowsForTest(1));
+			check(banana == list({ "2,banana,20", "2,banana,20" }) && applied
+				&& view.shownRowsForTest(0) == list({ "1,apple,10", "3,cherry,30", "4,date,40",
+					"" })
+				&& view.shownRowsForTest(1) == list({ "1,apple,11", "3,cereja,30", "5,elder,50",
+					"6,fig,60" }),
+				"table, Apply: the rows the filter does not hold for go, on both sides");
+
+			// the rule under a row that hidden rows follow: rows 1 and 5 here
+			{
+				QTableView *table = view.tableForTest(1);
+				const QImage image = table->grab().toImage();
+				const qreal ratio = image.devicePixelRatio();
+				const QColor ink = table->palette().color(QPalette::Text);
+				const auto ruled = [&](int modelRow, bool margin)
+				{
+					const int y = table->rowViewportPosition(modelRow) + table->rowHeight(modelRow) - 1;
+					// (past the last column, clear of the edge's scroll bar)
+					const int pastColumns = table->columnViewportPosition(2) + table->columnWidth(2) + 10;
+					const QPoint at = margin
+						? table->verticalHeader()->mapTo(table, QPoint(1, y))
+						: table->viewport()->mapTo(table, QPoint(pastColumns, y));
+					return image.pixelColor(qRound(at.x() * ratio), qRound(at.y() * ratio)) == ink;
+				};
+				shoot(&view, "table");
+				check(ruled(0, false) && ruled(3, false) && ruled(0, true) && ruled(3, true)
+					&& !ruled(1, false) && !ruled(2, false) && !ruled(1, true),
+					"table, rules: one under each row that hidden rows follow");
+			}
+
+			// a row's cells: of either side, of one side, as numbers, and
+			// with the quotes they are written with, as upstream reads them
+			const auto leftBy = [&](const char *filter) {
+				applyTable(view, QLatin1String(filter));
+				return view.shownRowsForTest(0);
+			};
+			const QStringList dear = leftBy("le:toNumber(Column3) > 25");
+			const QStringList apple = leftBy("le:LeftColumn2 = \"apple\"");
+			const QStringList rightE = leftBy("le:RightColumn2 contains \"e\"");
+			const QStringList quoted = leftBy("le:Column2 = \"\"\"x,y\"\"\"");
+			const QStringList bare = leftBy("le:Column2 = \"x,y\"");
+			const QStringList named = leftBy("le:Column1 = \"id\" or LeftColumn1 = \"2\"");
+			say("table, third cell above 25, left", dear);
+			say("table, right name with an e, left", rightE);
+			check(dear == list({ "3,cherry,30", "4,date,40", "", "9,\"x,y\",90" })
+				&& apple == list({ "1,apple,10" })
+				&& rightE == list({ "1,apple,10", "3,cherry,30", "4,date,40" })
+				&& quoted == list({ "9,\"x,y\",90" }) && bare.isEmpty()
+				&& named == list({ "2,banana,20" }),
+				"table, columns: a row's cells, of either side or of one");
+
+			// differences hidden whole are passed over; Copy All is refused
+			applyTable(view, QStringLiteral("le:LeftColumn2 = \"apple\""));
+			view.gotoFirstDiff();
+			const int first = view.currentDiffForTest();
+			view.gotoNextDiff();
+			const int next = view.currentDiffForTest();
+			view.gotoLastDiff();
+			const int last = view.currentDiffForTest();
+			messages.clear();
+			view.copyAllFrom(0);
+			const bool refused = !view.isModified() && messages
+				== QStringList{ QCoreApplication::translate("TableCompareView", refusal) };
+			// one difference at a time is allowed
+			view.copyCurrentDiff(0);
+			settle();
+			printf("  table, differences stopped at: %d %d %d\n", first, next, last);
+			check(first == 0 && next == 0 && last == 0 && refused && view.isModified()
+				&& view.diffCount() == 1
+				&& view.shownRowsForTest(1) == list({ "1,apple,10" }),
+				"table: hidden differences are passed over, Copy All refused, a copy allowed");
+			view.undo();
+			settle();
+
+			// the header's menu
+			applyTable(view, QString());
+			QMenu menu;
+			view.buildHeaderMenu(1, 1, &menu);
+			QStringList items;
+			for (const QAction *action : menu.actions())
+				items.append(action->isSeparator() ? QStringLiteral("-") : action->text());
+			QStringList ignores;
+			if (const QAction *ignore = menu.actions().value(3); ignore != nullptr && ignore->menu())
+				for (const QAction *action : ignore->menu()->actions())
+					ignores.append(action->isSeparator() ? QStringLiteral("-") : action->text());
+			QStringList kinds;
+			if (const QAction *last = menu.actions().value(4); last != nullptr && last->menu())
+				for (const QAction *action : last->menu()->actions())
+					kinds.append(action->text());
+			const auto t = [](const char *text) {
+				return QCoreApplication::translate("TableCompareView", text);
+			};
+			auto *headers = menu.findChild<QAction *>(QStringLiteral("useFirstLineAsHeaders"));
+			auto *fit = menu.findChild<QAction *>(QStringLiteral("autoFitAllColumns"));
+			auto *byText = menu.findChild<QAction *>(QStringLiteral("filterColumnText"));
+			if (headers == nullptr || fit == nullptr || byText == nullptr)
+				return 1;
+#ifdef Q_OS_MACOS
+			const char *const hint = "(\u2318+Click to add another column)";
+#else
+			const char *const hint = "(Ctrl+Click to add another column)";
+#endif
+			check(items == QStringList{ t("Use First Line as Headers"), t("Auto-Fit All Columns"),
+					QStringLiteral("-"), t("&Ignore This Column"), t("&Filter by This Column") }
+				&& ignores == QStringList{ t("In &All Panes"),
+					t("In &This Pane Only (Column Not in Other Files)"), t(hint),
+					QStringLiteral("-"), t("&Reset All") }
+				&& kinds == QStringList{ t("&Text..."), t("&Number..."), t("&Date/Time...") }
+				&& headers->isChecked(),
+				"table, header menu: upstream's items");
+
+			// Filter by This Column: the condition is asked for, joins the
+			// filter with AND, and the bar comes up with it applied
+			const auto answer = [&view](const QString &value, QString *lhs)
+			{
+				QTimer::singleShot(0, &view, [&view, value, lhs]() {
+					auto *dialog = view.findChild<FilterConditionDialog *>();
+					if (dialog == nullptr)
+					{
+						printf("no Filter Condition dialog to answer\n");
+						std::exit(3);
+					}
+					*lhs = dialog->findChild<QLabel *>(QStringLiteral("conditionLhs"))->text();
+					dialog->findChild<QComboBox *>(QStringLiteral("conditionValue1"))
+						->setEditText(value);
+					dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+				});
+			};
+			view.toggleDisplayFilterBar(); // (closed: the menu's item brings it back)
+			settle();
+			QString lhsText, lhsNumber;
+			answer(QStringLiteral("an"), &lhsText);
+			byText->trigger();
+			settle();
+			const QString byName = view.displayFilter();
+			const QStringList withAn = view.shownRowsForTest(1);
+			const bool cameUp = view.displayFilterBarShown()
+				&& view.displayFilterBarForTest()->field()->isApplied()
+				&& view.displayFilterBarForTest()->filterText() == byName;
+			answer(QStringLiteral("20"), &lhsNumber);
+			view.addColumnToDisplayFilter(0, 2, 1);
+			settle();
+			// (past the last column there is nothing to ask about)
+			view.addColumnToDisplayFilter(0, -1, 0);
+			printf("  %s | %s | %s\n", qPrintable(lhsText), qPrintable(lhsNumber),
+				qPrintable(view.displayFilter()));
+			check(lhsText == QStringLiteral("RightColumn2") && lhsNumber == QStringLiteral("toNumber(LeftColumn3)")
+				&& byName == QStringLiteral("le:RightColumn2 contains \"an\"")
+				&& withAn == list({ "2,banana,20" }) && cameUp
+				&& view.displayFilter() == QStringLiteral(
+					"le:RightColumn2 contains \"an\" AND toNumber(LeftColumn3) = 20")
+				&& view.shownRowsForTest(0) == list({ "2,banana,20" }),
+				"table, Filter by This Column: asked for, joined with AND and applied");
+
+			// the header's row is the header whatever the filter makes of
+			// it; as a row it goes by the filter like the others
+			applyTable(view, QStringLiteral("le:Column2 = \"name\" or Column2 = \"banana\""));
+			const QStringList asHeader = view.shownRowsForTest(0);
+			headers->trigger();
+			settle();
+			const QStringList asRow = view.shownRowsForTest(0);
+			QMenu again;
+			view.buildHeaderMenu(0, 0, &again);
+			auto *headersAgain = again.findChild<QAction *>(QStringLiteral("useFirstLineAsHeaders"));
+			const bool unticked = headersAgain != nullptr && !headersAgain->isChecked();
+			if (headersAgain != nullptr)
+				headersAgain->trigger();
+			settle();
+			check(asHeader == list({ "2,banana,20" })
+				&& asRow == list({ "id,name,price", "2,banana,20" }) && unticked
+				&& view.shownRowsForTest(0) == asHeader,
+				"table, Use First Line as Headers: the header's row is no row of the filter's");
+
+			// Auto-Fit All Columns: one set of widths for both sides
+			applyTable(view, QString());
+			QTableView *leftGrid = view.tableForTest(0);
+			QTableView *rightGrid = view.tableForTest(1);
+			const int before = leftGrid->columnWidth(1);
+			fit->trigger();
+			settle();
+			printf("  column widths: %d before, then %d %d %d\n", before, leftGrid->columnWidth(0),
+				leftGrid->columnWidth(1), leftGrid->columnWidth(2));
+			check(leftGrid->columnWidth(1) != before
+				&& leftGrid->columnWidth(0) == rightGrid->columnWidth(0)
+				&& leftGrid->columnWidth(1) == rightGrid->columnWidth(1)
+				&& leftGrid->columnWidth(2) == rightGrid->columnWidth(2)
+				&& leftGrid->columnWidth(1) > leftGrid->columnWidth(0),
+				"table, Auto-Fit All Columns: as wide as the widest cell of either side");
+		}
+
+		// --- the View menu's item, for a file comparison too ---
+		{
+			fresh();
+			MainWindow window;
+			window.resize(1100, 640);
+			auto *action = window.findChild<QAction *>(QStringLiteral("displayFilterBarAction"));
+			if (action == nullptr)
+				return 1;
+			window.openFileComparison(left, right);
+			settle();
+			auto *file = window.findChild<FileCompareView *>();
+			if (file == nullptr)
+				return 1;
+			const bool usable = action->isEnabled() && !action->isChecked();
+			action->trigger();
+			settle();
+			const bool shownAndTicked = file->displayFilterBarShown() && action->isChecked();
+			apply(*file, QStringLiteral("ERROR"));
+			window.show();
+			settle();
+			shoot(&window, "window");
+			action->trigger();
+			settle();
+			const bool closed = !file->displayFilterBarShown() && !action->isChecked()
+				&& file->displayFilter() == QStringLiteral("ERROR");
+			const Qt::KeyboardModifiers chord = Qt::ControlModifier | Qt::ShiftModifier;
+			window.displayFilterBarCommand(chord);
+			const DisplayFilterBar *byKeys = file->displayFilterBarForTest();
+			window.displayFilterBarCommand(chord);
+			check(usable && shownAndTicked && closed && byKeys != nullptr
+				&& file->displayFilterBarForTest() == byKeys
+				&& byKeys->filterText() == QStringLiteral("ERROR"),
+				"View menu: Display Filter Bar, for the file comparison in front");
+
+			// and for a table
+			window.openTableComparison(leftTable, rightTable);
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			if (table == nullptr)
+				return 1;
+			const bool tableUsable = action->isEnabled() && !action->isChecked();
+			action->trigger();
+			settle();
+			// (its own bar: the file comparison's stays as it was)
+			const bool tableShown = table->displayFilterBarShown() && action->isChecked()
+				&& file->displayFilterBarForTest() == byKeys;
+			window.displayFilterBarCommand(chord);
+			applyTable(*table, QStringLiteral("fig"));
+			action->trigger();
+			settle();
+			check(tableUsable && tableShown && !table->displayFilterBarShown()
+				&& !action->isChecked() && table->displayFilter() == QStringLiteral("fig")
+				&& table->shownRowsForTest(1) == list({ "6,fig,60" })
+				&& file->displayFilter() == QStringLiteral("ERROR"),
+				"View menu: Display Filter Bar, for the table in front");
+		}
+
+		lm::setMessageSinkForTest([](const QString &) {});
+		lm::setReplaceListBaseForTest(QString());
+		lm::setReplaceListChooserForTest({});
+		lm::setReplaceListOpenerForTest({});
+		printf("line filter: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestGeneralOptionsOpt))
+	{
+		// WinMerge's General page options, on this run's own settings
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		write(left, "a\n");
+		write(right, "b\n");
+		const QString leftCsv = dir.filePath(QStringLiteral("left.csv"));
+		const QString rightCsv = dir.filePath(QStringLiteral("right.csv"));
+		write(leftCsv, "k,v\n1,a\n");
+		write(rightCsv, "k,v\n1,b\n");
+		const QString leftPng = dir.filePath(QStringLiteral("left.png"));
+		const QString rightPng = dir.filePath(QStringLiteral("right.png"));
+		QImage image(8, 8, QImage::Format_RGB32);
+		image.fill(Qt::white);
+		image.save(leftPng);
+		image.fill(Qt::red);
+		image.save(rightPng);
+		const QString leftDir = dir.filePath(QStringLiteral("L"));
+		const QString rightDir = dir.filePath(QStringLiteral("R"));
+		QDir().mkpath(leftDir);
+		QDir().mkpath(rightDir);
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto pressEsc = [](QWidget *target)
+		{
+			QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+			QCoreApplication::sendEvent(target, &press);
+			QKeyEvent release(QEvent::KeyRelease, Qt::Key_Escape, Qt::NoModifier);
+			QCoreApplication::sendEvent(target, &release);
+			QCoreApplication::processEvents();
+			QCoreApplication::processEvents();
+		};
+		const auto setEsc = [](int mode)
+		{
+			QSettings().setValue(QStringLiteral("General/CloseWithEsc"), mode);
+		};
+		const auto tabCount = [](MainWindow &window)
+		{
+			return window.findChild<QTabWidget *>()->count();
+		};
+
+		// Esc climbs from each kind of page to the window and closes it
+		setEsc(OptionsDialog::EscTabOrMainWindow);
+		const auto closesPage = [&](const char *what, auto open, auto focusOf)
+		{
+			MainWindow window;
+			window.show();
+			open(window);
+			QCoreApplication::processEvents();
+			const int before = tabCount(window);
+			QWidget *target = focusOf(window);
+			if (target == nullptr)
+			{
+				check(false, what);
+				return;
+			}
+			pressEsc(target);
+			check(tabCount(window) == before - 1, what);
+		};
+		closesPage("Esc closes a file comparison",
+			[&](MainWindow &w) { w.openFileComparison({ left, right }); },
+			[](MainWindow &w) -> QWidget * { return w.findChild<DiffTextEdit *>(); });
+		closesPage("Esc closes a table comparison",
+			[&](MainWindow &w) { w.openFileComparison({ leftCsv, rightCsv }); },
+			[](MainWindow &w) -> QWidget * {
+				auto *table = w.findChild<TableCompareView *>();
+				return table != nullptr ? table->findChild<QTableView *>() : nullptr;
+			});
+		closesPage("Esc closes an image comparison",
+			[&](MainWindow &w) { w.openFileComparison({ leftPng, rightPng }); },
+			[](MainWindow &w) -> QWidget * { return w.findChild<ImagePane *>(); });
+		closesPage("Esc closes a finished folder comparison",
+			[&](MainWindow &w) {
+				w.openFolderComparison({ leftDir, rightDir });
+				auto *folder = w.findChild<FolderCompareView *>();
+				for (int i = 0; i < 400 && folder != nullptr
+					&& folder->isComparingForTest(); ++i)
+				{
+					QThread::msleep(25);
+					QCoreApplication::processEvents();
+				}
+			},
+			[](MainWindow &w) -> QWidget * {
+				auto *folder = w.findChild<FolderCompareView *>();
+				return folder != nullptr ? folder->findChild<QTreeWidget *>() : nullptr;
+			});
+
+		// the Find dialog has its own Esc: it closes, the tab stays
+		{
+			MainWindow window;
+			window.show();
+			window.openFileComparison({ left, right });
+			auto *view = window.findChild<FileCompareView *>();
+			view->showFind();
+			FindTextDialog *find = view->paneSearchForTest(view->activePaneForTest())->findDialog();
+			const int before = tabCount(window);
+			if (find != nullptr)
+				pressEsc(find->findTextForTest()->lineEdit());
+			check(find != nullptr && !find->isVisible() && tabCount(window) == before,
+				"Esc closes the Find dialog only");
+		}
+
+		// a running folder comparison: Esc stops it and the tab stays
+		{
+			MainWindow window;
+			window.show();
+			window.openFolderComparison({ leftDir, rightDir });
+			auto *folder = window.findChild<FolderCompareView *>();
+			const int before = tabCount(window);
+			const bool running = folder != nullptr && folder->isComparingForTest();
+			pressEsc(folder != nullptr ? folder->findChild<QTreeWidget *>() : nullptr);
+			check(running && tabCount(window) == before,
+				"Esc stops a running folder comparison first");
+		}
+
+		// the four modes, on file comparisons
+		{
+			setEsc(OptionsDialog::EscDisabled);
+			MainWindow window;
+			window.show();
+			window.openFileComparison({ left, right });
+			const int before = tabCount(window);
+			pressEsc(window.findChild<DiffTextEdit *>());
+			check(tabCount(window) == before, "Disabled keeps the tab");
+		}
+		{
+			setEsc(OptionsDialog::EscTabOrMainWindow);
+			MainWindow window;
+			window.show();
+			window.openFileComparison({ left, right });
+			window.openFileComparison({ right, left });
+			while (tabCount(window) > 0)
+				pressEsc(window.findChild<QTabWidget *>()->currentWidget()
+					->findChild<QWidget *>());
+			check(window.isVisible(), "Tab or main window: tabs go first");
+			pressEsc(&window);
+			check(!window.isVisible(), "Tab or main window: no tab, the window");
+		}
+		{
+			setEsc(OptionsDialog::EscTabOnly);
+			MainWindow window;
+			window.show();
+			window.openFileComparison({ left, right });
+			while (tabCount(window) > 0)
+				pressEsc(window.findChild<QTabWidget *>()->currentWidget()
+					->findChild<QWidget *>());
+			pressEsc(&window);
+			check(window.isVisible(), "Tab only never closes the window");
+		}
+		{
+			setEsc(OptionsDialog::EscMainWindowIfOneTab);
+			MainWindow window;
+			window.show();
+			window.openFileComparison({ left, right });
+			window.openFileComparison({ right, left });
+			while (tabCount(window) > 1)
+				pressEsc(window.findChild<QTabWidget *>()->currentWidget()
+					->findChild<DiffTextEdit *>());
+			check(window.isVisible(), "One tab left: still open");
+			pressEsc(window.findChild<DiffTextEdit *>());
+			check(!window.isVisible(), "Main window if only one tab");
+		}
+		{
+			// the selection screen: Esc is its Cancel button, any mode
+			setEsc(OptionsDialog::EscDisabled);
+			MainWindow window;
+			window.show();
+			window.openFileComparison({ left, right });
+			window.openSelector({ left, right });
+			auto *selector = window.findChild<NewComparisonView *>();
+			pressEsc(selector != nullptr ? selector->findChild<QLineEdit *>() : nullptr);
+			check(window.findChild<NewComparisonView *>() == nullptr,
+				"Esc cancels the selection screen");
+		}
+		{
+			// the last tab too, and before the window weighs Esc: in
+			// "main window if only one tab" it closes the screen only
+			setEsc(OptionsDialog::EscMainWindowIfOneTab);
+			MainWindow window;
+			window.show();
+			window.openSelector({});
+			auto *selector = window.findChild<NewComparisonView *>();
+			pressEsc(selector != nullptr ? selector->findChild<QLineEdit *>() : nullptr);
+			check(window.findChild<NewComparisonView *>() == nullptr
+				&& tabCount(window) == 0 && window.isVisible(),
+				"Esc on a lone selection screen closes it, not the window");
+		}
+		{
+			// Cancel closes a lone selection screen (COpenView::OnCancel)
+			MainWindow window;
+			window.show();
+			window.openSelector({});
+			QPushButton *cancel = nullptr;
+			for (QPushButton *button : window.findChild<NewComparisonView *>()
+					->findChildren<QPushButton *>())
+				if (button->text() == NewComparisonView::tr("Cancel"))
+					cancel = button;
+			if (cancel == nullptr)
+				return 2;
+			cancel->click();
+			QCoreApplication::processEvents();
+			QCoreApplication::processEvents();
+			check(window.findChild<NewComparisonView *>() == nullptr
+				&& window.isVisible(), "Cancel closes a lone selection screen");
+		}
+
+		// closing the window offers to save every comparison's unsaved
+		// changes, and one Cancel keeps it open (CMainFrame::OnClose)
+		{
+			const QString mine = dir.filePath(QStringLiteral("mine.txt"));
+			const QString theirs = dir.filePath(QStringLiteral("theirs.txt"));
+			write(mine, "a\n");
+			write(theirs, "b\n");
+			const auto read = [](const QString &path)
+			{
+				QFile f(path);
+				if (!f.open(QIODevice::ReadOnly))
+					std::exit(2);
+				return f.readAll();
+			};
+			QList<int> answers; // one per prompt: 0 cancels, 1 saves, 2 discards
+			int prompts = 0;
+			MainWindow::setSavePromptForTest([&]() { return answers.value(prompts++, 0); });
+			MainWindow window;
+			window.show();
+			window.openFileComparison({ mine, theirs });
+			window.openFileComparison({ leftCsv, rightCsv });
+			window.openFileComparison({ left, right });
+			QCoreApplication::processEvents();
+			auto *tabs = window.findChild<QTabWidget *>();
+			auto *text = qobject_cast<FileCompareView *>(tabs->widget(0));
+			auto *table = qobject_cast<TableCompareView *>(tabs->widget(1));
+			if (text == nullptr || table == nullptr)
+				return 2;
+			text->typeAtForTest(0, 0, QStringLiteral("kept "));
+			table->gotoFirstDiff();
+			table->copyCurrentDiff(0);
+
+			// the text asks first and is saved, the table then cancels
+			answers = { 1, 0 };
+			const bool closed = window.close();
+			check(!closed && window.isVisible() && prompts == 2
+				&& read(mine) == "kept a\n" && !text->isModified()
+				&& table->isModified() && tabs->currentIndex() == 1,
+				"closing the window: each unsaved tab asks, Cancel keeps it open");
+			// only the table is left to ask, and it is discarded
+			prompts = 0;
+			answers = { 2 };
+			check(window.close() && !window.isVisible() && prompts == 1
+				&& read(rightCsv) == "k,v\n1,b\n",
+				"closing the window: Discard lets it close");
+
+			// nothing unsaved: no prompt
+			prompts = 0;
+			MainWindow plain;
+			plain.show();
+			plain.openFileComparison({ left, right });
+			QCoreApplication::processEvents();
+			check(plain.close() && prompts == 0, "closing the window: nothing unsaved, nothing asked");
+			MainWindow::setSavePromptForTest([]() { return 2; });
+		}
+
+		// Preserve file time: the saved file keeps its date
+		const QDateTime older(QDate(2020, 1, 1), QTime(10, 0));
+		for (const bool preserve : { true, false })
+		{
+			QSettings().setValue(QStringLiteral("General/PreserveFileTime"), preserve);
+			write(left, "a\n");
+			{
+				QFile f(left);
+				if (!f.open(QIODevice::Append))
+					std::exit(2);
+				f.setFileTime(older, QFileDevice::FileModificationTime);
+			}
+			FileCompareView view;
+			QString error;
+			view.compare(left, right, &error);
+			view.typeAtForTest(0, 0, QStringLiteral("x"));
+			view.saveModified(&error);
+			const qint64 drift = qAbs(QFileInfo(left).lastModified().secsTo(older));
+			check(preserve ? drift < 2 : drift > 86400,
+				preserve ? "Preserve file time keeps the date"
+				         : "without it the date moves");
+		}
+
+		// Close the selection on Compare: off (WinMerge's default) keeps it
+		for (const bool closeOnCompare : { false, true })
+		{
+			QSettings().setValue(QStringLiteral("General/CloseSelectorOnCompare"),
+				closeOnCompare);
+			MainWindow window;
+			window.openSelector({ left, right });
+			auto *selector = window.findChild<NewComparisonView *>();
+			auto *pathEdit = selector != nullptr
+				? selector->findChild<QLineEdit *>() : nullptr;
+			if (pathEdit == nullptr)
+				return 2;
+			QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(pathEdit, &press);
+			QCoreApplication::processEvents();
+			QCoreApplication::processEvents();
+			const bool open = window.findChild<NewComparisonView *>() != nullptr;
+			check(window.findChildren<FileCompareView *>().size() == 1
+				&& open != closeOnCompare,
+				closeOnCompare ? "Compare closes the selection"
+				               : "Compare keeps the selection open");
+		}
+
+		// auto completion of the path fields
+		for (int source = 0; source < 3; ++source)
+		{
+			QSettings().setValue(QStringLiteral("General/AutoCompleteSource"), source);
+			NewComparisonView selector;
+			auto *combo = selector.findChild<QComboBox *>();
+			QCompleter *completer = combo != nullptr ? combo->completer() : nullptr;
+			const bool right = source == 0 ? completer == nullptr
+				: source == 1 ? completer != nullptr
+					&& qobject_cast<QFileSystemModel *>(completer->model()) != nullptr
+				: completer != nullptr && completer->model() == combo->model();
+			check(right, source == 0 ? "no auto completion"
+				: source == 1 ? "completion from the file system"
+				              : "completion from the recent list");
+		}
+
+		// clearing the recent items empties the recent-list suggestions,
+		// in a selection screen that is already open too
+		{
+			QSettings().setValue(QStringLiteral("General/AutoCompleteSource"), 2);
+			QSettings().setValue(QStringLiteral("NewComparison/History"),
+				QStringList{ left, right });
+			NewComparisonView selector;
+			auto *combo = selector.findChild<QComboBox *>();
+			const bool had = combo != nullptr && combo->count() == 2
+				&& combo->completer() != nullptr
+				&& combo->completer()->model()->rowCount() == 2;
+			NewComparisonView::clearSavedHistory();
+			selector.reloadHistory();
+			check(had && combo->count() == 0
+				&& combo->completer()->model()->rowCount() == 0
+				&& NewComparisonView::savedHistory().isEmpty(),
+				"clearing the recent items clears the suggestions");
+		}
+
+		// Verify paths (on by default): the status names what is wrong and
+		// Compare waits for a path that exists
+		{
+			const QString missing = dir.filePath(QStringLiteral("nothing-here"));
+			const QString zip = dir.filePath(QStringLiteral("pack.zip"));
+			write(zip, "PK");
+			NewComparisonView selector;
+			const auto combos = selector.findChildren<QComboBox *>();
+			const auto fill = [&](const QString &a, const QString &b, const QString &c)
+			{
+				combos.at(0)->setEditText(a);
+				combos.at(1)->setEditText(b);
+				combos.at(2)->setEditText(c);
+				selector.verifyPathsForTest();
+			};
+			const auto expect = [&](const char *what, const char *hint, bool enabled)
+			{
+				check(selector.hintForTest() == NewComparisonView::tr(hint)
+					&& selector.compareEnabledForTest() == enabled, what);
+			};
+			fill({}, {}, {});
+			expect("empty fields: the prompt, Compare off",
+				"Select two (or three) folders/files to compare.", false);
+			fill(missing, missing, {});
+			expect("both invalid", "Both paths are invalid!", false);
+			fill(leftDir, missing, {});
+			expect("right invalid", "Right (2nd) path is invalid!", true);
+			fill(left, {}, {});
+			expect("a lone file is a start",
+				"Select two (or three) folders/files to compare.", true);
+			fill(left, leftDir, {});
+			expect("file and folder", "Cannot compare file and folder!", true);
+			fill(leftDir, zip, {});
+			expect("folder and archive",
+				"Select two (or three) folders/files to compare.", true);
+			fill(left, missing, right);
+			expect("middle invalid", "Middle (2nd) path is invalid!", true);
+			fill(missing, left, missing);
+			expect("left and right invalid",
+				"Left (1st) and Right (3rd) paths are invalid!", true);
+			fill(left, right, leftDir);
+			expect("3-way file and folder", "Cannot compare file and folder!", true);
+
+			QSettings().setValue(QStringLiteral("General/VerifyOpenPaths"), false);
+			fill(missing, missing, {});
+			check(selector.compareEnabledForTest(), "unchecked: Compare always on");
+			QSettings().setValue(QStringLiteral("General/VerifyOpenPaths"), true);
+
+			// Enter with Compare off does nothing
+			MainWindow window;
+			window.openSelector({ missing, missing });
+			auto *screen = window.findChild<NewComparisonView *>();
+			auto *pathEdit = screen != nullptr ? screen->findChild<QLineEdit *>() : nullptr;
+			if (pathEdit == nullptr)
+				return 2;
+			QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(pathEdit, &press);
+			QCoreApplication::processEvents();
+			check(window.findChildren<FileCompareView *>().isEmpty()
+				&& window.findChildren<FolderCompareView *>().isEmpty(),
+				"Enter with Compare off opens nothing");
+		}
+
+		// Shift+Delete on an open dropdown forgets the highlighted path,
+		// in every field and in the saved history; a typed path stays
+		{
+			QSettings().setValue(QStringLiteral("NewComparison/History"),
+				QStringList{ left, right });
+			NewComparisonView selector;
+			const auto combos = selector.findChildren<QComboBox *>();
+			QComboBox *first = combos.value(0);
+			QComboBox *second = combos.value(1);
+			if (first == nullptr || second == nullptr)
+				return 2;
+			second->setEditText(QStringLiteral("typed/path"));
+			first->view()->setCurrentIndex(first->model()->index(0, 0));
+			QKeyEvent press(QEvent::KeyPress, Qt::Key_Delete, Qt::ShiftModifier);
+			QCoreApplication::sendEvent(first->view(), &press);
+			check(first->count() == 1 && first->itemText(0) == right
+				&& second->count() == 1
+				&& second->currentText() == QStringLiteral("typed/path")
+				&& NewComparisonView::savedHistory() == QStringList{ right },
+				"Shift+Delete forgets one recent path");
+		}
+
+		printf("general options: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestTabCloseOpt))
+	{
+		// closing the current tab goes back to the one current before it,
+		// as MDI's Z order does in WinMerge (issue #16)
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		QStringList files;
+		for (int i = 0; i < 6; ++i)
+		{
+			const QString path = dir.filePath(QStringLiteral("f%1.txt").arg(i));
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				return 2;
+			f.write(QByteArray::number(i) + '\n');
+			files.append(path);
+		}
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		MainWindow window;
+		window.show();
+		auto *tabs = window.findChild<QTabWidget *>();
+		const auto closeTab = [tabs](int index)
+		{
+			emit tabs->tabCloseRequested(index);
+			QCoreApplication::processEvents();
+		};
+		// the comparisons A, B, C and D, opened in that order
+		QList<QWidget *> pages;
+		for (int i = 0; i < 4; ++i)
+		{
+			window.openFileComparison({ files[i], files[i + 1] });
+			pages.append(tabs->currentWidget());
+		}
+		QCoreApplication::processEvents();
+
+		// back to A, a comparison opened from there and closed: A again,
+		// not D, its neighbour
+		tabs->setCurrentWidget(pages[0]);
+		window.openFileComparison({ files[4], files[5] });
+		QCoreApplication::processEvents();
+		closeTab(tabs->currentIndex());
+		check(tabs->count() == 4 && tabs->currentWidget() == pages[0],
+			"Closing returns to the tab it was opened from");
+
+		// A, then C, then B, and C closed from its own tab: B stays, and
+		// closing it skips C and goes back to A, where a neighbour is D
+		tabs->setCurrentWidget(pages[2]);
+		tabs->setCurrentWidget(pages[1]);
+		closeTab(tabs->indexOf(pages[2]));
+		check(tabs->count() == 3 && tabs->currentWidget() == pages[1],
+			"Closing another tab keeps the current one");
+		closeTab(tabs->currentIndex());
+		check(tabs->count() == 2 && tabs->currentWidget() == pages[0],
+			"Closing skips a tab closed meanwhile");
+
+		printf("tab close: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestLineDiffsOpt))
+	{
+		// WinMerge's Editor > Compare/Merge page (PropEditorCompareMerge)
+		// and what its options do, on this run's own settings
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [&dir](const char *name, const QByteArray &bytes)
+		{
+			const QString path = dir.filePath(QString::fromLatin1(name));
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+			return path;
+		};
+		const QString wordsLeft = write("words_l.txt", "alpha beta gamma\n");
+		const QString wordsRight = write("words_r.txt", "alpha betx gamma\n");
+		const QString punctLeft = write("punct_l.txt", "one a.b two\n");
+		const QString punctRight = write("punct_r.txt", "one a.x two\n");
+		const QString csvLeft = write("left.csv", "k,v\n1,a\n");
+		const QString csvRight = write("right.csv", "k,v\n1,b\n");
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%-58s %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto wait = [](int ms)
+		{
+			QElapsedTimer timer;
+			timer.start();
+			while (timer.elapsed() < ms)
+			{
+				QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+				QThread::msleep(10);
+			}
+		};
+		COptionsMgr *mgr = GetOptionsMgr();
+		if (mgr == nullptr)
+			return 2;
+		const auto spans = [](FileCompareView *view)
+		{
+			QStringList out;
+			for (const auto &span : view->wordSpansForTest(0))
+				out.append(QStringLiteral("%1+%2").arg(span.first).arg(span.second));
+			return out.join(QLatin1Char(' '));
+		};
+
+		// the page: its defaults, the level and the break type only with
+		// the line differences shown, and Defaults
+		{
+			OptionsDialog dialog;
+			QWidget *page = dialog.pageForTest(OptionsDialog::EditorCompareMergePage);
+			auto *rescan = page->findChild<QCheckBox *>(QStringLiteral("automaticRescan"));
+			auto *lineDiffs = page->findChild<QCheckBox *>(QStringLiteral("viewLineDiffs"));
+			auto *charLevel = page->findChild<QRadioButton *>(QStringLiteral("charLevel"));
+			auto *wordLevel = page->findChild<QRadioButton *>(QStringLiteral("wordLevel"));
+			auto *breakType = page->findChild<QComboBox *>(QStringLiteral("breakType"));
+			auto *breakChars = page->findChild<QLineEdit *>(QStringLiteral("breakChars"));
+			if (!rescan || !lineDiffs || !charLevel || !wordLevel || !breakType || !breakChars)
+				return 2;
+			check(!rescan->isChecked() && lineDiffs->isChecked() && charLevel->isChecked()
+				&& breakType->currentIndex() == 1 && breakType->count() == 2
+				&& breakChars->text() == QStringLiteral(".,:;?[](){}<=>`'!\"#$%&^~\\|@+-*/"),
+				"page defaults as WinMerge's");
+			lineDiffs->setChecked(false);
+			check(!charLevel->isEnabled() && !wordLevel->isEnabled() && !breakType->isEnabled()
+				&& breakChars->isEnabled(), "level and break type follow the check box");
+			wordLevel->setChecked(true);
+			dialog.selectCategoryForTest(10);
+			dialog.restoreDefaultsForTest();
+			check(dialog.currentPageForTest() == OptionsDialog::EditorCompareMergePage
+				&& lineDiffs->isChecked() && charLevel->isChecked() && charLevel->isEnabled(),
+				"Defaults restores the page");
+		}
+
+		// character level by default, word level on request
+		{
+			MainWindow window;
+			window.show();
+			auto *action = window.findChild<QAction *>(QStringLiteral("viewLineDiffsAction"));
+			check(action != nullptr && !action->isEnabled(),
+				"View Line Differences waits for a text comparison");
+			window.openFileComparison({ wordsLeft, wordsRight });
+			wait(50);
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr || action == nullptr)
+				return 2;
+			printf("  character level: %s\n", qPrintable(spans(view)));
+			check(spans(view) == QStringLiteral("9+1"), "character level marks the character");
+			mgr->Set(OPT_BREAK_ON_WORDS, true);
+			view->rescan();
+			printf("  word level: %s\n", qPrintable(spans(view)));
+			check(spans(view) == QStringLiteral("6+4"), "word level marks the word");
+			mgr->Set(OPT_BREAK_ON_WORDS, false);
+
+			// View Line Differences: worked out still, not drawn
+			check(action->isEnabled() && action->isChecked()
+				&& view->drawnWordSpansForTest(0) > 0, "line differences drawn");
+			action->trigger();
+			check(!lm::viewLineDifferences() && !action->isChecked()
+				&& view->drawnWordSpansForTest(0) == 0 && view->wordSpanCountForTest(0) > 0,
+				"View Line Differences turns them off");
+			action->trigger();
+			check(lm::viewLineDifferences() && view->drawnWordSpansForTest(0) > 0,
+				"and on again");
+		}
+
+		// the break type and the break characters, at word level
+		{
+			mgr->Set(OPT_BREAK_ON_WORDS, true);
+			MainWindow window;
+			window.openFileComparison({ punctLeft, punctRight });
+			wait(50);
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			const QString punctuation = spans(view);
+			mgr->Set(OPT_BREAK_TYPE, 0);
+			view->rescan();
+			const QString whitespace = spans(view);
+			mgr->Set(OPT_BREAK_TYPE, 1);
+			mgr->Set(OPT_BREAK_SEPARATORS, String(","));
+			lm::updateBreakChars();
+			view->rescan();
+			const QString comma = spans(view);
+			printf("  punctuation: %s, whitespace: %s, comma only: %s\n",
+				qPrintable(punctuation), qPrintable(whitespace), qPrintable(comma));
+			check(punctuation == QStringLiteral("6+1"), "a break character ends a word");
+			check(whitespace == QStringLiteral("4+3"), "whitespace only keeps a.b whole");
+			check(comma == QStringLiteral("4+3"), "the break characters are the page's");
+			mgr->Set(OPT_BREAK_SEPARATORS, mgr->GetDefault<String>(OPT_BREAK_SEPARATORS));
+			lm::updateBreakChars();
+			mgr->Set(OPT_BREAK_ON_WORDS, false);
+		}
+
+		// a block of more than 21 lines is diffed line by line of the view
+		// (IsDiffPerLine), a smaller one at once: with a line put in at
+		// its top, the lines meet their own counterparts only at once
+		{
+			const auto block = [&write](const char *name, int count, bool right) {
+				QByteArray bytes = "top\n";
+				if (right)
+					bytes += "zz\n";
+				for (int k = 0; k < count; ++k)
+					bytes += "line " + QByteArray::number(k) + (right ? " two\n" : " one\n");
+				return write(name, bytes + "bottom\n");
+			};
+			mgr->Set(OPT_BREAK_ON_WORDS, true);
+			MainWindow window;
+			window.openFileComparison({ block("big_l.txt", 22, false), block("big_r.txt", 22, true) });
+			wait(50);
+			auto *big = window.findChild<FileCompareView *>();
+			if (big == nullptr)
+				return 2;
+			const QStringList bigSpans = spans(big).split(QLatin1Char(' '));
+			MainWindow window2;
+			window2.openFileComparison({ block("small_l.txt", 18, false),
+				block("small_r.txt", 18, true) });
+			wait(50);
+			auto *smallComparison = window2.findChild<FileCompareView *>();
+			if (smallComparison == nullptr)
+				return 2;
+			const QStringList smallSpans = spans(smallComparison).split(QLatin1Char(' '));
+			printf("  23 lines: %s\n  19 lines: %s\n", qPrintable(bigSpans.join(QLatin1Char(' '))),
+				qPrintable(smallSpans.join(QLatin1Char(' '))));
+			check(bigSpans.contains(QStringLiteral("5+1")) && bigSpans.contains(QStringLiteral("7+3")),
+				"more than 21 lines: line by line");
+			// (the word "one" at 7, or at 8 from line 10 on)
+			check(!smallSpans.contains(QStringLiteral("5+1"))
+				&& smallSpans.count(QStringLiteral("7+3")) + smallSpans.count(QStringLiteral("8+3")) == 18,
+				"up to 21 lines: at once");
+			mgr->Set(OPT_BREAK_ON_WORDS, false);
+		}
+
+		// a table's differing cells are its line differences
+		{
+			MainWindow window;
+			window.openFileComparison({ csvLeft, csvRight });
+			wait(50);
+			auto *table = window.findChild<TableCompareView *>();
+			if (table == nullptr)
+				return 2;
+			const auto cellColor = [table]() {
+				// the first line is the header: the data's 1,a is row 0
+				return table->tableForTest(0)->model()->index(0, 1)
+					.data(Qt::BackgroundRole).value<QColor>();
+			};
+			const lm::DiffColors &C = lm::diffColors();
+			const QColor shown = cellColor();
+			mgr->Set(OPT_WORDDIFF_HIGHLIGHT, false);
+			const QColor hidden = cellColor();
+			mgr->Set(OPT_WORDDIFF_HIGHLIGHT, true);
+			check((shown == C.wordDiffDeleted || shown == C.selWordDiffDeleted)
+				&& hidden != C.wordDiffDeleted && hidden != C.selWordDiffDeleted,
+				"a table's cells follow View line differences");
+		}
+
+		// every edit leaves the differences out of date, not only the
+		// first; the automatic rescan works them out a second later
+		{
+			MainWindow window;
+			window.openFileComparison({ wordsLeft, wordsRight });
+			wait(50);
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			int rescans = 0;
+			QObject::connect(view, &FileCompareView::rescanned, [&rescans]() { ++rescans; });
+			view->typeAtForTest(0, 0, QStringLiteral("x"));
+			const bool first = view->diffStaleForTest();
+			view->recompare();
+			const bool cleared = !view->diffStaleForTest();
+			view->typeAtForTest(0, 0, QStringLiteral("y"));
+			check(first && cleared && view->diffStaleForTest(),
+				"an edit after a recompare is out of date again");
+			wait(1300);
+			check(view->diffStaleForTest() && rescans == 0,
+				"no automatic rescan when it is off");
+
+			mgr->Set(OPT_AUTOMATIC_RESCAN, true);
+			view->typeAtForTest(0, 0, QStringLiteral("z"));
+			wait(400);
+			const bool waiting = view->diffStaleForTest();
+			view->typeAtForTest(0, 0, QStringLiteral("w"));
+			wait(700);
+			const bool stillWaiting = view->diffStaleForTest();
+			wait(800);
+			check(waiting && stillWaiting && !view->diffStaleForTest() && rescans == 1,
+				"automatic rescan a second after the last edit");
+			mgr->Set(OPT_AUTOMATIC_RESCAN, false);
+		}
+
+		printf("line diffs: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestTableMenuOpt))
+	{
+		// WinMerge's pane menu as far as it goes in a table, a cell standing
+		// for its difference inside a line: the items and what they do, on
+		// this run's own settings
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [&dir](const char *name, const QByteArray &bytes)
+		{
+			const QString path = dir.filePath(QString::fromLatin1(name));
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+			return path;
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		// (a grid's rows 0 to 2 are the first difference's, 3 agrees, 4 the
+		// second difference's)
+		const QString left = write("left.csv",
+			"id,name,note\n1,apple,red\n2,pear,green\n3,plum,blue\nkeep,keep,keep\n5,kiwi,brown\n");
+		const QString right = write("right.csv",
+			"id,name,note\n1,APPLE,red\n2,PEAR,GREEN\n3,plum,BLUE\nkeep,keep,keep\n5,KIWI,brown\n");
+		const QString threeLeft = write("three_l.csv", "id,n\nabc,1\ntail,2\n");
+		const QString threeMiddle = write("three_m.csv", "id,n\nxyz,1\ntail,2\n");
+		const QString threeRight = write("three_r.csv", "id,n\nabc,3\ntail,2\n");
+		const QStringList both{ left, right };
+		const QStringList three{ threeLeft, threeMiddle, threeRight };
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%-58s %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		QStringList shown;
+		lm::setMessageSinkForTest([&shown](const QString &text) { shown.append(text); });
+		QString asked;
+		bool answer = false;
+		lm::setQuestionSinkForTest([&asked, &answer](const QString &text, bool *) {
+			asked = text;
+			return answer;
+		});
+		const auto open = [](TableCompareView &view, const QStringList &paths)
+		{
+			QString error;
+			if (!view.compare(paths, &error))
+				std::exit(2);
+			view.resize(1000, 500);
+			view.show();
+		};
+		const auto rows = [](TableCompareView &view, int side)
+		{
+			return view.rawLinesForTest(side).mid(1).join(QLatin1Char('|'));
+		};
+		const auto item = [](QMenu &menu, const char *name) {
+			return menu.findChild<QAction *>(QLatin1String(name));
+		};
+		// the names of the items above the Select Line Difference one
+		const auto itemNames = [](QMenu &menu)
+		{
+			QStringList names;
+			for (QAction *action : menu.actions())
+			{
+				if (action->objectName() == QStringLiteral("cellSelectLineDiff"))
+					break;
+				names.append(action->isSeparator() ? QStringLiteral("-") : action->objectName());
+			}
+			return names.join(QLatin1Char(' '));
+		};
+		const auto trigger = [&item](TableCompareView &view, int side, const char *name) {
+			QMenu menu;
+			view.buildCellMenu(side, &menu);
+			item(menu, name)->trigger();
+		};
+		const auto enabled = [&item](TableCompareView &view, int side, const char *name) {
+			QMenu menu;
+			view.buildCellMenu(side, &menu);
+			return item(menu, name)->isEnabled();
+		};
+		const auto at = [](TableCompareView &view, int side) {
+			const QModelIndex index = view.tableForTest(side)->currentIndex();
+			return QStringLiteral("%1:%2").arg(index.row()).arg(index.column());
+		};
+		const QString untouchedRight = QStringLiteral("1,APPLE,red|2,PEAR,GREEN|3,plum,BLUE|keep,keep,keep|5,KIWI,brown");
+
+		// which items each grid offers, and their names
+		{
+			TableCompareView view;
+			open(view, both);
+			QMenu leftMenu;
+			view.buildCellMenu(0, &leftMenu);
+			QMenu rightMenu;
+			view.buildCellMenu(1, &rightMenu);
+			printf("  2-way left: %s\n", qPrintable(itemNames(leftMenu)));
+			check(itemNames(leftMenu) == QStringLiteral("cellCopy_0_1 cellCopy_1_0 - cellCopyLines_0_1 "
+					"cellCopyLines_1_0 - cellDiffToClipboard_0 cellDiffToClipboard_1 -"),
+				"2-way, left grid: to and from the right");
+			check(itemNames(rightMenu) == QStringLiteral("cellCopy_1_0 cellCopy_0_1 - cellCopyLines_1_0 "
+					"cellCopyLines_0_1 - cellDiffToClipboard_0 cellDiffToClipboard_1 -"),
+				"2-way, right grid: to and from the left");
+			QAction *toRight = item(leftMenu, "cellCopy_0_1");
+			QAction *fromRight = item(leftMenu, "cellCopy_1_0");
+			check(toRight->text() == TableCompareView::tr("C&opy to Right")
+				&& toRight->shortcut() == QKeySequence(Qt::ALT | Qt::Key_Right)
+				&& fromRight->text() == TableCompareView::tr("Copy fro&m Right")
+				&& fromRight->shortcut() == QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_Left)
+				&& item(leftMenu, "cellSelectLineDiff")->shortcut() == QKeySequence(Qt::Key_F4)
+				&& item(leftMenu, "cellDiffToClipboard_1")->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_2),
+				"their names and keys");
+		}
+		{
+			TableCompareView view;
+			open(view, three);
+			QMenu leftMenu;
+			view.buildCellMenu(0, &leftMenu);
+			QMenu middleMenu;
+			view.buildCellMenu(1, &middleMenu);
+			QMenu rightMenu;
+			view.buildCellMenu(2, &rightMenu);
+			const auto copies = [&itemNames](QMenu &menu) {
+				return itemNames(menu).section(QLatin1Char('-'), 0, 0).trimmed();
+			};
+			check(copies(leftMenu) == QStringLiteral("cellCopy_0_1 cellCopy_0_2 cellCopy_1_0 cellCopy_2_0")
+				&& copies(middleMenu) == QStringLiteral("cellCopy_1_0 cellCopy_1_2 cellCopy_0_1 cellCopy_2_1")
+				&& copies(rightMenu) == QStringLiteral("cellCopy_2_1 cellCopy_2_0 cellCopy_1_2 cellCopy_0_2"),
+				"3-way: each grid its own");
+			check(item(middleMenu, "cellCopy_1_0")->shortcut() == QKeySequence(Qt::ALT | Qt::Key_Left)
+				&& item(leftMenu, "cellCopy_0_1")->shortcut().isEmpty()
+				&& item(leftMenu, "cellDiffToClipboard_2")->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_3),
+				"3-way: the keys of the middle one, and Ctrl+3");
+			check(item(leftMenu, "addToDisplayFilter")->isEnabled()
+				&& !item(leftMenu, "addToLineFilters")->isEnabled()
+				&& !item(leftMenu, "addToSubstitutionFilters")->isEnabled(),
+				"3-way: the display filter only");
+		}
+
+		// a right click, in and out of the selection
+		{
+			TableCompareView view;
+			open(view, both);
+			QStringList offered;
+			DiffTextEdit::setContextMenuPresenterForTest([&offered](QMenu *popup) {
+				offered.clear();
+				for (QAction *action : popup->actions())
+					offered.append(action->objectName());
+			});
+			const auto rightClick = [&view](int side, int row, int column) {
+				QTableView *table = view.tableForTest(side);
+				const QPoint point = table->visualRect(table->model()->index(row, column)).center();
+				QContextMenuEvent event(QContextMenuEvent::Mouse, point,
+					table->viewport()->mapToGlobal(point), Qt::NoModifier);
+				QCoreApplication::sendEvent(table->viewport(), &event);
+			};
+			view.selectCellsForTest(0, 0, 0, 1, 1);
+			rightClick(1, 2, 1);
+			check(at(view, 1) == QStringLiteral("2:1") && offered.contains(QStringLiteral("cellCopy_1_0")),
+				"on a cell: the current one, and the menu of its grid");
+			check(view.tableForTest(1)->selectionModel()->selectedIndexes().size() == 1,
+				"out of the selection: only that cell selected");
+			view.selectCellsForTest(0, 0, 0, 1, 1);
+			rightClick(0, 1, 1);
+			check(view.tableForTest(0)->selectionModel()->selectedIndexes().size() == 4
+				&& offered.contains(QStringLiteral("cellCopy_0_1")), "in the selection: it stays");
+			view.gotoFirstDiff();
+			rightClick(0, 1, 0);
+			check(view.currentDiffForTest() == 0, "in the current difference: it stays current");
+			rightClick(0, 3, 0);
+			check(view.currentDiffForTest() == -1, "out of it: none current");
+			DiffTextEdit::setContextMenuPresenterForTest({});
+		}
+
+		// what is enabled where
+		{
+			TableCompareView view;
+			open(view, both);
+			view.selectCellsForTest(0, 3, 0, 3, 0);
+			check(!enabled(view, 0, "cellCopy_0_1") && !enabled(view, 0, "cellCopyLines_0_1")
+				&& !enabled(view, 0, "cellDiffToClipboard_0"), "a cell of no difference: no copy");
+			view.selectCellsForTest(0, 3, 0, 3, 2);
+			check(!enabled(view, 0, "cellCopy_0_1") && !enabled(view, 0, "cellCopyLines_0_1"),
+				"a selection of no difference: no copy");
+			view.selectCellsForTest(0, 3, 0, 4, 2);
+			check(enabled(view, 0, "cellCopy_0_1") && enabled(view, 0, "cellCopyLines_0_1"),
+				"a selection that reaches one: they copy");
+			view.selectCellsForTest(0, 1, 0, 1, 0);
+			check(enabled(view, 0, "cellCopy_0_1") && enabled(view, 0, "cellDiffToClipboard_1"),
+				"a cell of a difference: they copy");
+			view.gotoFirstDiff();
+			view.selectCellsForTest(0, 3, 0, 3, 0);
+			check(enabled(view, 0, "cellCopy_0_1"), "the current difference, wherever the cursor is");
+			check(!enabled(view, 0, "cellUndo") && !enabled(view, 0, "cellRedo"), "nothing to undo yet");
+		}
+
+		// the copies: the difference, or its selected rows, or a side's
+		{
+			TableCompareView view;
+			open(view, both);
+			view.selectCellsForTest(0, 1, 0, 1, 0);
+			trigger(view, 0, "cellCopy_0_1");
+			check(rows(view, 1) == QStringLiteral("1,apple,red|2,pear,green|3,plum,blue|keep,keep,keep|5,KIWI,brown")
+				&& view.isModified(), "Copy to Right: the whole difference");
+			check(enabled(view, 0, "cellUndo") && !enabled(view, 0, "cellRedo"), "and it can be undone");
+			trigger(view, 0, "cellUndo");
+			check(rows(view, 1) == untouchedRight && enabled(view, 0, "cellRedo"), "Undo from the menu");
+			trigger(view, 0, "cellRedo");
+			check(rows(view, 1).startsWith(QStringLiteral("1,apple,red|2,pear,green")), "Redo from the menu");
+		}
+		{
+			TableCompareView view;
+			open(view, both);
+			view.selectCellsForTest(0, 1, 0, 1, 0);
+			trigger(view, 0, "cellCopy_1_0");
+			check(rows(view, 0) == QStringLiteral("1,APPLE,red|2,PEAR,GREEN|3,plum,BLUE|keep,keep,keep|5,kiwi,brown")
+				&& rows(view, 1) == untouchedRight, "Copy from Right: into its own grid");
+		}
+		{
+			TableCompareView view;
+			open(view, both);
+			view.selectCellsForTest(1, 1, 0, 1, 0);
+			view.copyFromLeft();
+			check(rows(view, 1).startsWith(QStringLiteral("1,apple,red|2,pear,green|3,plum,blue")),
+				"Alt+Shift+Right: from the left, into the right grid");
+			view.undo();
+			view.selectCellsForTest(0, 1, 0, 1, 0);
+			view.copyFromRight();
+			check(rows(view, 0).startsWith(QStringLiteral("1,APPLE,red|2,PEAR,GREEN|3,plum,BLUE")),
+				"Alt+Shift+Left: from the right, into the left grid");
+		}
+		{
+			TableCompareView view;
+			open(view, both);
+			int rescans = 0;
+			QObject::connect(&view, &TableCompareView::rescanned, [&rescans]() { ++rescans; });
+			view.selectCellsForTest(0, 1, 2, 1, 2);
+			trigger(view, 0, "cellCopyLines_0_1");
+			check(rows(view, 1) == QStringLiteral("1,APPLE,red|2,pear,green|3,plum,BLUE|keep,keep,keep|5,KIWI,brown")
+				&& rescans == 1, "Copy Selected Lines: the cursor's row of its difference");
+			view.undo();
+			check(rows(view, 1) == untouchedRight, "and undone at once");
+			view.selectCellsForTest(0, 0, 1, 1, 1);
+			trigger(view, 0, "cellCopyLines_0_1");
+			check(rows(view, 1) == QStringLiteral("1,apple,red|2,pear,green|3,plum,BLUE|keep,keep,keep|5,KIWI,brown"),
+				"Copy Selected Lines: the selection's rows");
+			view.undo();
+			view.selectCellsForTest(0, 1, 0, 4, 0);
+			trigger(view, 0, "cellCopyLines_0_1");
+			check(rows(view, 1) == QStringLiteral("1,APPLE,red|2,pear,green|3,plum,blue|keep,keep,keep|5,kiwi,brown"),
+				"Copy Selected Lines: over two differences");
+			view.undo();
+			check(rows(view, 1) == untouchedRight, "and undone at once, as one step");
+			view.selectCellsForTest(1, 0, 0, 0, 2);
+			trigger(view, 1, "cellCopyLines_1_0");
+			check(rows(view, 0) == QStringLiteral("1,APPLE,red|2,pear,green|3,plum,blue|keep,keep,keep|5,kiwi,brown"),
+				"Copy Selected Lines to Left, from the right grid");
+		}
+		{
+			// a row one side lacks
+			TableCompareView view;
+			open(view, { write("ghost_l.csv", "id,n\na,1\nb,2\nc,3\nd,4\n"), write("ghost_r.csv", "id,n\na,1\nd,4\n") });
+			view.selectCellsForTest(0, 2, 0, 2, 0);
+			trigger(view, 0, "cellCopyLines_0_1");
+			check(rows(view, 1) == QStringLiteral("a,1|c,3|d,4"), "a row the target lacks goes in");
+			view.undo();
+			view.selectCellsForTest(1, 2, 0, 2, 0);
+			trigger(view, 1, "cellCopyLines_1_0");
+			check(rows(view, 0) == QStringLiteral("a,1|b,2|d,4"), "a row the source lacks goes out");
+		}
+		{
+			// hidden rows
+			TableCompareView view;
+			open(view, both);
+			view.selectCellsForTest(0, 0, 1, 0, 1);
+			trigger(view, 0, "addToDisplayFilter");
+			printf("  display filter: %s, %d row(s)\n", qPrintable(view.displayFilter()),
+				static_cast<int>(view.shownRowsForTest(0).size()));
+			check(view.displayFilter() == QStringLiteral("le:Line contains \"apple\"")
+				&& view.displayFilterBarForTest() != nullptr && view.shownRowsForTest(0).size() == 1,
+				"Add to Display Filter: the cell's text");
+			shown.clear();
+			view.selectCellsForTest(0, 0, 0, 0, 1);
+			trigger(view, 0, "cellCopyLines_0_1");
+			check(rows(view, 1) == untouchedRight && shown.size() == 1, "a selection with hidden rows: refused");
+		}
+
+		// the clipboard
+		{
+			TableCompareView view;
+			open(view, both);
+			QClipboard *clipboard = QGuiApplication::clipboard();
+			clipboard->setText(QStringLiteral("sentinel"));
+			view.selectCellsForTest(0, 3, 0, 3, 0);
+			view.copySelectedDiffToClipboard(0);
+			check(clipboard->text() == QStringLiteral("sentinel"), "Ctrl+1 out of a difference: nothing");
+			view.selectCellsForTest(0, 1, 0, 1, 0);
+			trigger(view, 0, "cellDiffToClipboard_0");
+			check(clipboard->text() == QStringLiteral("1,apple,red\n2,pear,green\n3,plum,blue\n"),
+				"Ctrl+1: the left side's rows");
+			trigger(view, 0, "cellDiffToClipboard_1");
+			check(clipboard->text() == QStringLiteral("1,APPLE,red\n2,PEAR,GREEN\n3,plum,BLUE\n"),
+				"Ctrl+2: the right side's rows");
+			TableCompareView last;
+			open(last, { write("final_l.csv", "id,n\nx,1"), write("final_r.csv", "id,n\ny,1\n") });
+			last.selectCellsForTest(0, 0, 0, 0, 0);
+			last.copySelectedDiffToClipboard(0);
+			check(clipboard->text() == QStringLiteral("x,1"), "a last row without an ending stays so");
+			TableCompareView middle;
+			open(middle, three);
+			middle.selectCellsForTest(0, 0, 0, 0, 0);
+			middle.copySelectedDiffToClipboard(1);
+			check(clipboard->text() == QStringLiteral("xyz,1\n"), "3-way: the middle's");
+		}
+
+		// Select Line Difference
+		{
+			TableCompareView view;
+			open(view, both);
+			view.selectCellsForTest(0, 0, 0, 0, 0);
+			QStringList visited;
+			for (int i = 0; i < 6; ++i)
+			{
+				view.selectLineDiff(false);
+				visited.append(at(view, 0));
+			}
+			printf("  F4: %s\n", qPrintable(visited.join(QLatin1Char(' '))));
+			check(visited.join(QLatin1Char(' ')) == QStringLiteral("0:1 1:1 1:2 2:2 4:1 0:1"),
+				"F4: cell by cell, block by block, round the file");
+			check(at(view, 1) == at(view, 0)
+				&& view.tableForTest(1)->selectionModel()->selectedIndexes().size() == 1,
+				"current in the other grid too");
+			visited.clear();
+			for (int i = 0; i < 6; ++i)
+			{
+				view.selectLineDiff(true);
+				visited.append(at(view, 0));
+			}
+			printf("  Shift+F4: %s\n", qPrintable(visited.join(QLatin1Char(' '))));
+			check(visited.join(QLatin1Char(' ')) == QStringLiteral("4:1 2:2 1:2 1:1 0:1 4:1"),
+				"Shift+F4: the same way back");
+			view.selectCellsForTest(0, 3, 1, 3, 1);
+			view.selectLineDiff(false);
+			check(at(view, 0) == QStringLiteral("4:1"), "from a row of no difference: the next one");
+			view.selectCellsForTest(0, 3, 1, 3, 1);
+			view.selectLineDiff(true);
+			check(at(view, 0) == QStringLiteral("2:2"), "and back: the previous one");
+			view.selectCellsForTest(0, 1, 2, 1, 2);
+			view.selectLineDiff(false);
+			check(at(view, 0) == QStringLiteral("1:2"), "from the cell itself: that one");
+		}
+		{
+			// a copy then takes the cell
+			TableCompareView view;
+			open(view, both);
+			view.selectCellsForTest(0, 1, 0, 1, 0);
+			view.selectLineDiff(false);
+			view.selectLineDiff(false);
+			check(at(view, 0) == QStringLiteral("1:2"), "(on the note of the pear)");
+			trigger(view, 0, "cellCopy_0_1");
+			check(rows(view, 1) == QStringLiteral("1,APPLE,red|2,PEAR,green|3,plum,BLUE|keep,keep,keep|5,KIWI,brown"),
+				"Copy to Right after F4: that cell");
+			view.undo();
+			view.selectCellsForTest(0, 1, 0, 1, 0);
+			view.selectLineDiff(false);
+			trigger(view, 0, "cellCopyLines_0_1");
+			check(rows(view, 1) == QStringLiteral("1,APPLE,red|2,pear,green|3,plum,BLUE|keep,keep,keep|5,KIWI,brown"),
+				"Copy Selected Lines after F4: its row");
+		}
+		{
+			// a row some side lacks is a stop of its own, and goes whole
+			TableCompareView view;
+			open(view, { write("stops_l.csv", "id,n\na,1\nb,2\nc,3\nd,4\n"), write("stops_r.csv", "id,n\na,1\nd,4\n") });
+			view.selectCellsForTest(0, 0, 0, 0, 0);
+			view.selectLineDiff(false);
+			const QString first = at(view, 0);
+			view.selectLineDiff(false);
+			printf("  stops: %s %s\n", qPrintable(first), qPrintable(at(view, 0)));
+			check(first == QStringLiteral("1:0") && at(view, 0) == QStringLiteral("2:0"), "one stop for each such row");
+			trigger(view, 0, "cellCopy_0_1");
+			check(rows(view, 1) == QStringLiteral("a,1|b,2|c,3|d,4"), "and a copy takes the difference");
+		}
+		{
+			TableCompareView view;
+			open(view, { left, left });
+			shown.clear();
+			view.selectLineDiff(false);
+			check(shown.size() == 1 && shown.at(0) == TableCompareView::tr("No differences found to select"),
+				"F4 with no difference at all: tells so");
+		}
+
+		// the filters
+		{
+			TableCompareView view;
+			open(view, both);
+			int rescans = 0;
+			QObject::connect(&view, &TableCompareView::rescanned, [&rescans]() { ++rescans; });
+			view.selectCellsForTest(1, 1, 1, 1, 1);
+			trigger(view, 1, "addToLineFilters");
+			{
+				LineFiltersList filters;
+				lm::copyLineFilters(&filters);
+				printf("  line filter: %s\n", filters.GetCount() > 0 ? filters.GetAt(0).filterStr.c_str() : "(none)");
+				check(filters.GetCount() == 1 && filters.GetAt(0).enabled && lm::lineFiltersEnabled()
+					&& filters.GetAt(0).filterStr == "PEAR" && rescans == 1,
+					"Add to Line Filters: the cell's text, on, compared again");
+			}
+			lm::saveLineFilters(false, LineFiltersList());
+			view.selectCellsForTest(0, 0, 1, 1, 2);
+			trigger(view, 0, "addToLineFilters");
+			{
+				LineFiltersList filters;
+				lm::copyLineFilters(&filters);
+				printf("  line filter: %s\n", filters.GetCount() > 0 ? filters.GetAt(0).filterStr.c_str() : "(none)");
+				const QString filter = filters.GetCount() > 0
+					? QString::fromStdString(filters.GetAt(0).filterStr) : QString();
+				check(filters.GetCount() == 1 && filter.startsWith(QStringLiteral("apple"))
+					&& filter.endsWith(QStringLiteral("green")) && filter.contains(QStringLiteral("pear")),
+					"of several cells: row by row");
+			}
+			lm::saveLineFilters(false, LineFiltersList());
+		}
+		{
+			TableCompareView view;
+			open(view, both);
+			int rescans = 0;
+			QObject::connect(&view, &TableCompareView::rescanned, [&rescans]() { ++rescans; });
+			view.selectCellsForTest(0, 0, 0, 0, 0);
+			answer = false;
+			trigger(view, 0, "addToSubstitutionFilters");
+			SubstitutionFiltersList pairs;
+			lm::copySubstitutionFilters(&pairs);
+			check(asked.contains(QStringLiteral("\"apple\" <-> \"APPLE\"")) && pairs.GetCount() == 0
+				&& at(view, 0) == QStringLiteral("0:1") && rescans == 0,
+				"Add to Substitution Filters: asks about the next cell; no");
+			view.selectCellsForTest(0, 0, 0, 0, 0);
+			answer = true;
+			trigger(view, 0, "addToSubstitutionFilters");
+			answer = false;
+			lm::copySubstitutionFilters(&pairs);
+			check(pairs.GetCount() == 1 && pairs.GetAt(0).pattern == "apple" && pairs.GetAt(0).replacement == "APPLE"
+				&& pairs.GetEnabled() && rescans == 1 && !view.diffRowsForTest().contains(1),
+				"yes: added, on, compared again, and that row agrees");
+			// the same pair, with the filters off
+			SubstitutionFiltersList off;
+			lm::copySubstitutionFilters(&off);
+			off.SetEnabled(false);
+			lm::saveSubstitutionFilters(off);
+			TableCompareView again;
+			open(again, both);
+			again.selectCellsForTest(0, 0, 0, 0, 0);
+			shown.clear();
+			asked.clear();
+			trigger(again, 0, "addToSubstitutionFilters");
+			check(shown.size() == 1 && shown.at(0).contains(QStringLiteral("\"apple\" <-> \"APPLE\""))
+				&& asked.isEmpty(), "a pair already there: tells so, and does not ask");
+			SubstitutionFiltersList none;
+			none.SetEnabled(false);
+			lm::saveSubstitutionFilters(none);
+		}
+
+		// Convert Line Endings to
+		{
+			const QString crlf = write("crlf.csv", "id,n\r\na,1\r\n");
+			TableCompareView view;
+			open(view, { crlf, write("lf.csv", "id,n\na,1\n") });
+			int rescans = 0;
+			QObject::connect(&view, &TableCompareView::rescanned, [&rescans]() { ++rescans; });
+			const auto convert = [&item](TableCompareView &on, int side, const char *name) {
+				QMenu menu;
+				on.buildConvertEolMenu(&menu, side);
+				item(menu, name)->trigger();
+			};
+			{
+				QMenu menu;
+				view.buildConvertEolMenu(&menu, 0);
+				check(menu.actions().size() == 3 && item(menu, "eolToWindows")->isChecked()
+					&& !item(menu, "eolToUnix")->isChecked() && !item(menu, "eolToMac")->isChecked(),
+					"the three, this one's marked");
+			}
+			convert(view, 0, "eolToUnix");
+			check(view.isModified() && rescans == 1, "converted: modified, compared again");
+			QString error;
+			check(view.saveModified(&error) && read(crlf) == "id,n\na,1\n", "and saved so");
+			rescans = 0;
+			convert(view, 0, "eolToUnix");
+			check(!view.isModified() && rescans == 0, "to the one it has: no change, no comparison");
+		}
+		{
+			// no step of the history: an undo leaves the endings as they are now
+			const QString target = write("undo_r.csv", "id,n\nb,1\n");
+			TableCompareView view;
+			open(view, { write("undo_l.csv", "id,n\na,1\n"), target });
+			view.selectCellsForTest(0, 0, 0, 0, 0);
+			view.copyLines(0, 1);
+			QMenu menu;
+			view.buildConvertEolMenu(&menu, 1);
+			item(menu, "eolToWindows")->trigger();
+			view.undo();
+			QString error;
+			check(rows(view, 1) == QStringLiteral("b,1") && view.isModified()
+				&& view.saveModified(&error) && read(target) == "id,n\r\nb,1\r\n",
+				"undo undoes the copy, not the conversion");
+		}
+		{
+			const QString mixed = write("mixed.csv", "id,n\r\na,1\nb,2\nc,3\r\n");
+			TableCompareView view;
+			open(view, { mixed, write("mixed_r.csv", "id,n\na,1\nb,2\nc,3\n") });
+			{
+				QMenu menu;
+				view.buildConvertEolMenu(&menu, 0);
+				check(view.mixedEolForTest(0) && !item(menu, "eolToWindows")->isChecked()
+					&& !item(menu, "eolToUnix")->isChecked() && !item(menu, "eolToMac")->isChecked(),
+					"mixed endings: none of the three marked");
+				item(menu, "eolToWindows")->trigger();
+			}
+			QString error;
+			check(!view.mixedEolForTest(0) && view.saveModified(&error)
+				&& read(mixed) == "id,n\r\na,1\r\nb,2\r\nc,3\r\n", "mixed endings: all the same now");
+		}
+		{
+			const QString noFinal = write("nofinal.csv", "id,n\na,1");
+			TableCompareView view;
+			open(view, { noFinal, write("nofinal_r.csv", "id,n\nx,1\n") });
+			QMenu menu;
+			view.buildConvertEolMenu(&menu, 0);
+			item(menu, "eolToWindows")->trigger();
+			QString error;
+			check(view.saveModified(&error) && read(noFinal) == "id,n\r\na,1", "a last row without an ending stays so");
+		}
+
+		// 3-way copies between explicit sides
+		{
+			TableCompareView view;
+			open(view, three);
+			view.selectCellsForTest(0, 0, 0, 0, 0);
+			trigger(view, 0, "cellCopyLines_2_0");
+			check(rows(view, 0) == QStringLiteral("abc,3|tail,2") && rows(view, 1) == QStringLiteral("xyz,1|tail,2"),
+				"3-way: Copy Selected Lines from Right, past the middle");
+		}
+
+		// the main window's keys and menus reach a table
+		{
+			MainWindow window;
+			window.resize(1000, 600);
+			window.show();
+			window.openTableComparison(write("win_l.csv", "id,n\na,1\nb,2\nc,3\n"), write("win_r.csv", "id,n\nA,1\nb,2\nC,3\n"));
+			settle();
+			auto *view = window.findChild<TableCompareView *>();
+			if (view == nullptr)
+				return 2;
+			const auto triggerKey = [&window](const char *name) {
+				window.findChild<QAction *>(QLatin1String(name))->trigger();
+			};
+			const auto menuOf = [](QAction *action) {
+				QMenu *owner = nullptr;
+				for (QObject *object : action->associatedObjects())
+					if (auto *menu = qobject_cast<QMenu *>(object))
+						owner = menu;
+				return owner;
+			};
+			auto *lineDiff = window.findChild<QAction *>(QStringLiteral("editSelectLineDiff"));
+			auto *convert = window.findChild<QAction *>(QStringLiteral("fileConvertEol"));
+			if (lineDiff == nullptr || convert == nullptr || menuOf(lineDiff) == nullptr
+				|| menuOf(convert) == nullptr)
+				return 2;
+			emit menuOf(lineDiff)->aboutToShow();
+			check(lineDiff->isEnabled(), "Edit > Select Line Difference: enabled");
+			view->selectCellsForTest(0, 0, 0, 0, 0);
+			triggerKey("editSelectLineDiff");
+			const QString forward = at(*view, 0);
+			triggerKey("editSelectLineDiff");
+			const QString next = at(*view, 0);
+			triggerKey("editSelectPrevLineDiff");
+			check(forward == QStringLiteral("0:0") && next == QStringLiteral("2:0") && at(*view, 0) == forward,
+				"F4 and Shift+F4");
+			triggerKey("editDiffToClipboard2");
+			check(QGuiApplication::clipboard()->text() == QStringLiteral("A,1\n"), "Ctrl+2: the right side's rows");
+			view->selectCellsForTest(1, 0, 1, 0, 1);
+			triggerKey("mergeCopyFromLeft");
+			check(rows(*view, 1) == QStringLiteral("a,1|b,2|C,3"), "Alt+Shift+Right: from the left, into the right grid");
+			view->undo();
+			view->selectCellsForTest(0, 0, 1, 0, 1);
+			triggerKey("mergeCopyFromRight");
+			check(rows(*view, 0) == QStringLiteral("A,1|b,2|c,3"), "Alt+Shift+Left: from the right, into the left grid");
+			emit menuOf(convert)->aboutToShow();
+			QMenu *submenu = convert->menu();
+			if (submenu == nullptr)
+				return 2;
+			emit submenu->aboutToShow();
+			check(convert->isEnabled() && submenu->actions().size() == 3
+				&& item(*submenu, "eolToUnix")->isChecked(), "File > Convert Line Endings to");
+			settle();
+		}
+
+		lm::setMessageSinkForTest({});
+		lm::setQuestionSinkForTest({});
+		printf("table menu: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestSyntaxMenuOpt))
+	{
+		// WinMerge's View > Syntax Highlight and the status bar's syntax
+		// column (ChangeSyntaxType, ShowSyntaxTypeMenu), and the types the
+		// files open with (SetTextTypesByFileType)
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [&dir](const char *name, const QByteArray &bytes)
+		{
+			const QString path = dir.filePath(QString::fromLatin1(name));
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+			return path;
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%-58s %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		COptionsMgr *mgr = GetOptionsMgr();
+		if (mgr == nullptr)
+			return 2;
+		const auto open = [](FileCompareView &view, const QStringList &paths)
+		{
+			QString error;
+			if (!view.compare(paths, &error))
+				std::exit(2);
+		};
+		const auto name = [](int type) { return SyntaxHighlighter::typeName(type); };
+		const QString cLeft = write("left.c", "int a;\n// one\nint b;\n");
+		const QString cRight = write("right.c", "int a;\n// two\nint b;\n");
+		// (an extension no type knows; ".txt" is plain text's own)
+		const QString text = write("notes.dat", "int a;\n");
+
+		// the types the files open with
+		{
+			FileCompareView view;
+			open(view, { cLeft, text });
+			printf("  %s | %s\n", qPrintable(view.syntaxLabelForTest(0)), qPrintable(view.syntaxLabelForTest(1)));
+			check(view.syntaxType(0) == LangServices::SRC_C && view.syntaxType(1) == LangServices::SRC_C
+					&& view.syntaxLabelForTest(1) == name(LangServices::SRC_C),
+				"a file whose extension gives none takes the other's type");
+		}
+		{
+			FileCompareView view;
+			open(view, { write("a.data", "<?xml version=\"1.0\"?>\n<a/>\n"), write("b.data", "<?xml version=\"1.0\"?>\n<b/>\n") });
+			check(view.syntaxType(0) == LangServices::SRC_XML && view.syntaxType(1) == LangServices::SRC_XML,
+				"with no type at all, XML by the declaration on the first line");
+		}
+		{
+			FileCompareView view;
+			open(view, { write("a.zzz", "x\n"), write("b.zzz", "y\n") });
+			check(view.syntaxType(0) == LangServices::SRC_PLAIN
+					&& view.syntaxLabelForTest(0) == FileCompareView::tr("Plain Text"),
+				"none: plain text, named so");
+		}
+
+		// View > Syntax Highlight, for every pane
+		{
+			MainWindow window;
+			window.resize(1000, 600);
+			window.show();
+			window.openFileComparison(cLeft, cRight);
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			auto *submenu = window.findChild<QAction *>(QStringLiteral("viewSyntaxHighlight"));
+			if (view == nullptr || submenu == nullptr || submenu->menu() == nullptr)
+				return 2;
+			emit submenu->menu()->aboutToShow();
+			const QList<QAction *> top = submenu->menu()->actions();
+			auto *cItem = window.findChild<QAction *>(QStringLiteral("syntaxType_%1").arg(LangServices::SRC_C));
+			auto *python = window.findChild<QAction *>(QStringLiteral("syntaxType_%1").arg(LangServices::SRC_PYTHON));
+			check(top.size() == 3 && top.at(0)->objectName() == QStringLiteral("syntaxType_0")
+					&& top.at(1)->menu() != nullptr && top.at(2)->menu() != nullptr
+					&& cItem != nullptr && cItem->isChecked() && cItem->isEnabled()
+					&& python != nullptr && !python->isChecked(),
+				"No Highlighting, A-L and M-Z, the pane's type marked");
+			python->trigger();
+			check(view->syntaxType(0) == LangServices::SRC_PYTHON && view->syntaxType(1) == LangServices::SRC_PYTHON
+					&& view->syntaxLabelForTest(0) == name(LangServices::SRC_PYTHON),
+				"a type from the menu: every pane");
+		}
+
+		// the status bar's column: a pane only, then Auto Syntax again
+		{
+			FileCompareView view;
+			view.resize(900, 400);
+			view.show();
+			open(view, { cLeft, cRight });
+			QStringList seen;
+			int seenSelected = -1;
+			bool seenEnabled = false;
+			lm::PopupList::Selection answer;
+			lm::PopupList::setPresenterForTest([&](const QStringList &items, int selected, bool enabled,
+				const QString &checkBoxText) {
+				seen = items;
+				seenSelected = selected;
+				seenEnabled = enabled;
+				seen.append(checkBoxText);
+				return answer;
+			});
+			const auto click = [&view](int pane) {
+				auto *label = view.findChild<QLabel *>(QStringLiteral("syntaxLabel%1").arg(pane));
+				if (label == nullptr)
+					std::exit(2);
+				QMouseEvent press(QEvent::MouseButtonPress, QPointF(2, 2), label->mapToGlobal(QPointF(2, 2)),
+					Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+				QCoreApplication::sendEvent(label, &press);
+			};
+			// "Auto Syntax", then the types from "No Highlighting" on
+			const int jsonRow = 1 + LangServices::SRC_JSON;
+			answer = { jsonRow, true };
+			click(1);
+			check(seen.value(0) == FileCompareView::tr("Auto Syntax")
+					&& seen.value(1) == name(LangServices::SRC_PLAIN)
+					&& seenSelected == 1 + LangServices::SRC_C && seenEnabled
+					&& seen.last() == FileCompareView::tr("Apply to this pane only"),
+				"the column's list: Auto Syntax and the types, the pane's selected");
+			check(view.syntaxType(0) == LangServices::SRC_C && view.syntaxType(1) == LangServices::SRC_JSON,
+				"Apply to this pane only: that pane's type alone");
+			answer = { 0, true };
+			click(1);
+			check(view.syntaxType(1) == LangServices::SRC_C, "Auto Syntax: its extension's type back");
+			answer = { 1 + LangServices::SRC_PLAIN, false };
+			click(0);
+			check(view.syntaxType(0) == LangServices::SRC_PLAIN && view.syntaxType(1) == LangServices::SRC_PLAIN
+					&& view.syntaxLabelForTest(1) == FileCompareView::tr("Plain Text"),
+				"No Highlighting for both: plain text");
+			answer = {};
+			click(0);
+			check(view.syntaxType(0) == LangServices::SRC_PLAIN, "the list closed: nothing changes");
+			lm::PopupList::setPresenterForTest({});
+			// the popup itself, when shots are asked for: taken and closed
+			const QString shots = qEnvironmentVariable("MERGEDESK_SELFTEST_SHOTS");
+			if (!shots.isEmpty())
+			{
+				QTimer::singleShot(300, [&shots]() {
+					if (QWidget *popup = QApplication::activePopupWidget())
+					{
+						popup->grab().save(shots + QStringLiteral("/syntax-popup.png"));
+						popup->close();
+					}
+				});
+				click(1);
+				view.grab().save(shots + QStringLiteral("/syntax-status.png"));
+			}
+		}
+
+		// "Ignore comment differences" goes by the type chosen
+		{
+			const bool comments = mgr->GetBool(OPT_CMP_FILTER_COMMENTLINES);
+			mgr->Set(OPT_CMP_FILTER_COMMENTLINES, true);
+			FileCompareView view;
+			open(view, { write("one.txt", "int a;\n// one\nint b;\n"), write("two.txt", "int a;\n// two\nint b;\n") });
+			const int before = view.diffCount();
+			view.setSyntaxType(LangServices::SRC_C);
+			printf("  differences: %d, then %d\n", before, view.diffCount());
+			check(before == 1 && view.diffCount() == 0,
+				"the comments C/C++ tells apart, once the files are C/C++");
+			mgr->Set(OPT_CMP_FILTER_COMMENTLINES, comments);
+		}
+
+		// "Highlight syntax" off: plain text, nothing to choose
+		{
+			mgr->Set(OPT_SYNTAX_HIGHLIGHT, false);
+			MainWindow window;
+			window.resize(1000, 600);
+			window.show();
+			window.openFileComparison(cLeft, cRight);
+			settle();
+			auto *view = window.findChild<FileCompareView *>();
+			auto *submenu = window.findChild<QAction *>(QStringLiteral("viewSyntaxHighlight"));
+			if (view == nullptr || submenu == nullptr)
+				return 2;
+			emit submenu->menu()->aboutToShow();
+			auto *cItem = window.findChild<QAction *>(QStringLiteral("syntaxType_%1").arg(LangServices::SRC_C));
+			bool listEnabled = true;
+			lm::PopupList::setPresenterForTest([&listEnabled](const QStringList &, int, bool enabled, const QString &) {
+				listEnabled = enabled;
+				return lm::PopupList::Selection{};
+			});
+			auto *label = view->findChild<QLabel *>(QStringLiteral("syntaxLabel0"));
+			QMouseEvent press(QEvent::MouseButtonPress, QPointF(2, 2), label->mapToGlobal(QPointF(2, 2)),
+				Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+			QCoreApplication::sendEvent(label, &press);
+			lm::PopupList::setPresenterForTest({});
+			check(view->syntaxType(0) == LangServices::SRC_PLAIN
+					&& view->syntaxLabelForTest(0) == name(LangServices::SRC_PLAIN)
+					&& cItem != nullptr && !cItem->isEnabled() && !listEnabled,
+				"Highlight syntax off: No Highlighting, the items and the list disabled");
+			mgr->Set(OPT_SYNTAX_HIGHLIGHT, true);
+		}
+		printf("syntax menu: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestIgnoredDiffsOpt))
+	{
+		// WinMerge's #3649 and #3754: the ignored differences apart in the
+		// status bar's numbers, and Go To going by those numbers
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [&dir](const char *name, const QByteArray &bytes)
+		{
+			const QString path = dir.filePath(QString::fromLatin1(name));
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+			return path;
+		};
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%-58s %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		// the middle difference, its lines both filtered, is the ignored one
+		LineFiltersList filters;
+		filters.AddFilter("^IGNORED", true);
+		lm::saveLineFilters(true, filters);
+		{
+			FileCompareView view;
+			QString error;
+			if (!view.compare({ write("left.txt", "a\nx1\nb\nIGNORED one\nc\nx2\nd\n"),
+					write("right.txt", "a\ny1\nb\nIGNORED two\nc\ny2\nd\n") }, &error))
+				return 2;
+			printf("  %s\n", qPrintable(view.statusTextForTest()));
+			check(view.diffCount() == 2
+					&& view.statusTextForTest().startsWith(FileCompareView::tr("%1 Differences (%2 ign.)").arg(2).arg(1)),
+				"two differences, one ignored apart");
+			view.gotoLastDiff();
+			printf("  %s\n", qPrintable(view.statusTextForTest()));
+			check(view.statusTextForTest().startsWith(FileCompareView::tr("Diff. %1 of %2 (%3 ign.)").arg(2).arg(2).arg(1)),
+				"the last one: number 2 of 2, the ignored one not counted");
+			QString range;
+			GoToDialog::setPresenterForTest([&range](GoToDialog *dialog) {
+				dialog->differenceButtonForTest()->click();
+				range = dialog->rangeLabelForTest()->text();
+				dialog->numberFieldForTest()->setText(QStringLiteral("2"));
+				return true;
+			});
+			view.gotoFirstDiff();
+			view.showGoTo(0);
+			GoToDialog::setPresenterForTest({});
+			printf("  Go To: %s, current %d\n", qPrintable(range), view.currentDiffForTest());
+			check(range == QStringLiteral("(1-2)") && view.currentDiffForTest() == 2,
+				"Go To: as many as the status bar counts, the second past the ignored one");
+		}
+		{
+			FileCompareView view;
+			QString error;
+			if (!view.compare({ write("one_l.txt", "a\nIGNORED one\nb\n"),
+					write("one_r.txt", "a\nIGNORED two\nb\nc\n") }, &error))
+				return 2;
+			printf("  %s\n", qPrintable(view.statusTextForTest()));
+			check(view.statusTextForTest().startsWith(FileCompareView::tr("1 Difference (%1 ign.)").arg(1)),
+				"one difference and one ignored");
+		}
+		{
+			TableCompareView table;
+			QString error;
+			if (!table.compare(write("left.csv", "id,v\n1,a\nk,1\nIGNORED,x\nk,2\n3,c\n"),
+					write("right.csv", "id,v\n1,A\nk,1\nIGNORED,y\nk,2\n3,C\n"), &error))
+				return 2;
+			printf("  table: %s\n", qPrintable(table.statusTextForTest()));
+			check(table.statusTextForTest().startsWith(TableCompareView::tr("%1 Differences (%2 ign.)").arg(2).arg(1)),
+				"a table counts them apart too");
+		}
+		lm::saveLineFilters(false, LineFiltersList());
+		printf("ignored diffs: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestViewEolOpt))
+	{
+		// WinMerge's View Whitespace and View EOL (SetViewTabs, SetViewEols)
+		// and Convert Line Endings (OnConvertEolTo), on this run's settings
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [&dir](const char *name, const QByteArray &bytes)
+		{
+			const QString path = dir.filePath(QString::fromLatin1(name));
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+			return path;
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%-58s %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		COptionsMgr *mgr = GetOptionsMgr();
+		if (mgr == nullptr)
+			return 2;
+		// "the files' lines end otherwise": no
+		lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+		lm::setMessageSinkForTest([](const QString &) {});
+		const QString cell = QString(QChar(0xA4));
+		const QString cr = QString(QChar(0xA7));
+		const QString lf = QString(QChar(0xB6));
+		const auto open = [](FileCompareView &view, const QStringList &paths)
+		{
+			QString error;
+			if (!view.compare(paths, &error))
+				std::exit(2);
+		};
+		const auto item = [](QMenu &menu, const char *name) {
+			return menu.findChild<QAction *>(QLatin1String(name));
+		};
+		const auto convert = [&item](FileCompareView &view, int side, const char *name) {
+			QMenu menu;
+			view.buildConvertEolMenu(&menu, side);
+			item(menu, name)->trigger();
+		};
+		const auto save = [](FileCompareView &view, int side) {
+			QString error;
+			return view.saveSideAt(side, &error);
+		};
+
+		check(!mgr->GetBool(OPT_VIEW_WHITESPACE) && !mgr->GetBool(OPT_VIEW_EOL), "both off by default");
+
+		// the glyphs of the endings
+		{
+			FileCompareView view;
+			open(view, { write("pure.txt", "a\r\nb\r\n"), write("short.txt", "a\r\n") });
+			check(view.eolGlyphForTest(0, 0) == cell && view.eolGlyphForTest(1, 1).isEmpty(),
+				"one glyph for every ending, none on a ghost line");
+		}
+		{
+			FileCompareView view;
+			open(view, { write("mixed.txt", "a\r\nb\nc\rd\n"), write("other.txt", "x\n") });
+			check(view.eolGlyphForTest(0, 0) == cell && view.eolGlyphForTest(0, 1) == lf
+				&& view.eolGlyphForTest(0, 2) == cr, "lines that keep their own: one for each kind");
+		}
+		{
+			FileCompareView view;
+			open(view, { write("final.txt", "a\nb"), write("other2.txt", "x\ny\nz\n") });
+			check(view.eolGlyphForTest(0, 0) == cell && view.eolGlyphForTest(0, 1).isEmpty(),
+				"none after a last line without one");
+		}
+		lm::setAllowMixedEolForTest(true);
+		{
+			FileCompareView view;
+			open(view, { write("plain.txt", "a\nb\n"), write("other3.txt", "a\nb\n") });
+			check(view.eolGlyphForTest(0, 0) == lf, "Preserve original EOL on: by kind too");
+		}
+		lm::setAllowMixedEolForTest(false);
+
+		// what the View menu's items do to what shows
+		{
+			MainWindow window;
+			window.resize(1000, 600);
+			window.show();
+			window.openFileComparison({ write("show_l.txt", "a b\nc\td\nsame\nint  x = 1;\n\tindent  more\n"), write("show_r.txt", "a b\nc\tX\nsame\nint  x = 1;\n\tindent  more\n") });
+			QCoreApplication::processEvents();
+			auto *view = window.findChild<FileCompareView *>();
+			auto *whitespace = window.findChild<QAction *>(QStringLiteral("viewWhitespaceAction"));
+			auto *eol = window.findChild<QAction *>(QStringLiteral("viewEolAction"));
+			if (view == nullptr || whitespace == nullptr || eol == nullptr)
+				return 2;
+			const auto shot = [view]() { return view->paneForTest(0)->viewport()->grab().toImage(); };
+			const QImage plain = shot();
+			whitespace->trigger();
+			const QImage dots = shot();
+			check(mgr->GetBool(OPT_VIEW_WHITESPACE) && dots != plain, "View Whitespace shows on the pane");
+			whitespace->trigger();
+			eol->trigger();
+			const QImage ends = shot();
+			check(mgr->GetBool(OPT_VIEW_EOL) && !mgr->GetBool(OPT_VIEW_WHITESPACE)
+				&& ends != plain && ends != dots, "View EOL shows on the pane, apart from it");
+			eol->trigger();
+			check(!mgr->GetBool(OPT_VIEW_EOL) && shot() == plain, "and both go again");
+			// a comparison opened later takes them
+			mgr->Set(OPT_VIEW_WHITESPACE, true);
+			FileCompareView later;
+			later.resize(800, 300);
+			later.show();
+			open(later, { write("later_l.txt", "a b\n"), write("later_r.txt", "a b\n") });
+			QCoreApplication::processEvents();
+			const QImage withDots = later.paneForTest(0)->viewport()->grab().toImage();
+			mgr->Set(OPT_VIEW_WHITESPACE, false);
+			later.refreshViewOptions();
+			check(withDots != later.paneForTest(0)->viewport()->grab().toImage(),
+				"a comparison opened later takes the option");
+			// the File menu's submenu, for the active pane
+			auto *submenuAction = window.findChild<QAction *>(QStringLiteral("fileConvertEol"));
+			QMenu *submenu = submenuAction != nullptr ? submenuAction->menu() : nullptr;
+			if (submenu == nullptr)
+				return 2;
+			emit submenu->aboutToShow();
+			check(submenu->actions().size() == 3 && item(*submenu, "eolToUnix")->isChecked()
+				&& !item(*submenu, "eolToWindows")->isChecked(), "File > Convert Line Endings to: the three, this one's marked");
+		}
+
+		// a pane's lines all end so, and the files compared again
+		{
+			const QString left = write("crlf.txt", "a b\r\nc\r\n");
+			const QString right = write("lf.txt", "a b\nc\n");
+			FileCompareView view;
+			open(view, { left, right });
+			int rescans = 0;
+			QObject::connect(&view, &FileCompareView::rescanned, [&rescans]() { ++rescans; });
+			check(view.diffCount() > 0 && view.encodingTextForTest(0).endsWith(QStringLiteral("Win")),
+				"(line endings that differ)");
+			convert(view, 0, "eolToUnix");
+			check(view.encodingTextForTest(0).endsWith(QStringLiteral("Unix")) && view.diffCount() == 0
+				&& view.isModified() && rescans == 1, "converted: named so, modified, compared again");
+			check(save(view, 0) && read(left) == "a b\nc\n", "and saved so");
+			// to the one it has: nothing changes
+			rescans = 0;
+			convert(view, 0, "eolToUnix");
+			check(!view.isModified() && rescans == 0, "to the one it has: no change, no comparison");
+		}
+		// no step of the history: an undo leaves the endings as they are now
+		{
+			const QString left = write("undo_l.txt", "a\r\nb\r\n");
+			FileCompareView view;
+			open(view, { left, write("undo_r.txt", "a\nb\n") });
+			view.typeAtForTest(0, 0, QStringLiteral("x"));
+			convert(view, 0, "eolToUnix");
+			view.undoActive();
+			check(view.realLinesForTest(0).value(0) == QStringLiteral("a")
+				&& view.encodingTextForTest(0).endsWith(QStringLiteral("Unix")), "undo undoes the edit, not the conversion");
+			check(view.isModified() && save(view, 0) && read(left) == "a\nb\n",
+				"and still saves converted");
+		}
+		// a file of mixed endings, whose lines keep theirs on their blocks
+		{
+			const QString left = write("mixed_l.txt", "a\r\nb\nc\rd\n");
+			FileCompareView view;
+			open(view, { left, write("mixed_r.txt", "a\nb\nc\nd\n") });
+			{
+				QMenu menu;
+				view.buildConvertEolMenu(&menu, 0);
+				check(view.mixedEolForTest(0) && !item(menu, "eolToWindows")->isChecked()
+					&& !item(menu, "eolToUnix")->isChecked() && !item(menu, "eolToMac")->isChecked(),
+					"mixed endings: none of the three marked");
+			}
+			view.typeAtForTest(0, 0, QStringLiteral("x"));
+			convert(view, 0, "eolToWindows");
+			check(!view.mixedEolForTest(0) && view.encodingTextForTest(0).endsWith(QStringLiteral("Win"))
+				&& view.eolGlyphForTest(0, 1) == cell, "mixed endings: all the same now");
+			view.undoActive();
+			check(save(view, 0) && read(left) == "a\r\nb\r\nc\r\nd\r\n",
+				"mixed endings: saved converted, after undoing an edit too");
+		}
+		// lines that keep their own: what is copied in afterwards keeps its
+		lm::setAllowMixedEolForTest(true);
+		{
+			const QString left = write("keep_l.txt", "a\nb\n");
+			FileCompareView view;
+			open(view, { left, write("keep_r.txt", "a\nX\n") });
+			convert(view, 0, "eolToWindows");
+			view.setCursorViewLineForTest(0, 1);
+			view.copyCurrentDiff(1, 0, false);
+			// (both lines differ by their endings now: the block is the file)
+			check(view.encodingTextForTest(0).endsWith(QStringLiteral("Win"))
+					&& save(view, 0) && read(left) == "a\nX\n",
+				"Preserve original EOL on: lines copied in after keep their own");
+		}
+		lm::setAllowMixedEolForTest(false);
+		// a last line without one stays so
+		{
+			const QString left = write("nofinal_l.txt", "a\nb");
+			FileCompareView view;
+			open(view, { left, write("nofinal_r.txt", "x\ny\n") });
+			convert(view, 0, "eolToWindows");
+			check(save(view, 0) && read(left) == "a\r\nb", "a last line without an ending stays so");
+		}
+		// a read-only pane, and a click on the status bar's ending
+		{
+			FileCompareView view;
+			view.setReadOnlySides({ true, false });
+			open(view, { write("ro_l.txt", "a\n"), write("ro_r.txt", "b\r\n") });
+			QMenu menu;
+			view.buildConvertEolMenu(&menu, 0);
+			check(item(menu, "eolToUnix")->isChecked() && !item(menu, "eolToUnix")->isEnabled()
+				&& !item(menu, "eolToWindows")->isEnabled() && !item(menu, "eolToMac")->isEnabled(),
+				"a read-only pane: its own marked, all conversions disabled");
+			view.show();
+			QStringList offered;
+			DiffTextEdit::setContextMenuPresenterForTest([&offered](QMenu *popup) {
+				for (QAction *action : popup->actions())
+					offered.append(action->objectName());
+			});
+			QLabel *label = view.eolLabelForTest(1);
+			QMouseEvent press(QEvent::MouseButtonPress, QPointF(2, 2), label->mapToGlobal(QPointF(2, 2)),
+				Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+			QCoreApplication::sendEvent(label, &press);
+			DiffTextEdit::setContextMenuPresenterForTest({});
+			check(offered == QStringList({ QStringLiteral("eolToWindows"), QStringLiteral("eolToUnix"),
+					QStringLiteral("eolToMac") }), "a click on the status bar's ending: the same menu");
+		}
+
+		lm::setQuestionSinkForTest({});
+		lm::setMessageSinkForTest({});
+		printf("view eol: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestPaneMenuOpt))
+	{
+		// WinMerge's pane menu (IDR_POPUP_MERGEVIEW, OnContextMenu) and what
+		// its items do, on this run's own settings
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [&dir](const char *name, const QByteArray &bytes)
+		{
+			const QString path = dir.filePath(QString::fromLatin1(name));
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+			return path;
+		};
+		const QString linesLeft = write("lines_l.txt", "top\na1\na2\na3\nbottom\n");
+		const QString linesRight = write("lines_r.txt", "top\nb1\nb2\nb3\nbottom\n");
+		const QString ghostRight = write("ghost_r.txt", "top\nb1\nbottom\n");
+		const QString same = write("same.txt", "top\nb1\nbottom\n");
+		const QString inlineLeft = write("inline_l.txt", "head\nx aaa y bbb z\ntail\n");
+		const QString inlineRight = write("inline_r.txt", "head\nx AAA y BBB z\ntail\n");
+		const QString stampLeft = write("stamp_l.txt", "keep\nstamp 1\nkeep2\n");
+		const QString stampRight = write("stamp_r.txt", "keep\nstamp 2\nkeep2\n");
+		const QString threeLeft = write("three_l.txt", "head\nabc one\ntail\n");
+		const QString threeMiddle = write("three_m.txt", "head\nxyz one\ntail\n");
+		const QString threeRight = write("three_r.txt", "head\nabc two\ntail\n");
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%-58s %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		COptionsMgr *mgr = GetOptionsMgr();
+		if (mgr == nullptr)
+			return 2;
+		QStringList shown;
+		lm::setMessageSinkForTest([&shown](const QString &text) { shown.append(text); });
+		QString asked;
+		bool answer = true;
+		lm::setQuestionSinkForTest([&asked, &answer](const QString &text, bool *) {
+			asked = text;
+			return answer;
+		});
+		const auto lines = [](FileCompareView &view, int side)
+		{
+			return view.realLinesForTest(side).join(QLatin1Char('|'));
+		};
+		const auto open = [](FileCompareView &view, const QStringList &paths)
+		{
+			QString error;
+			if (!view.compare(paths, &error))
+				std::exit(2);
+		};
+		// the names of the items above the Select Line Difference one
+		const auto itemNames = [](QMenu &menu)
+		{
+			QStringList names;
+			for (QAction *action : menu.actions())
+			{
+				if (action->objectName() == QStringLiteral("paneSelectLineDiff"))
+					break;
+				names.append(action->isSeparator() ? QStringLiteral("-") : action->objectName());
+			}
+			return names.join(QLatin1Char(' '));
+		};
+		const auto item = [](QMenu &menu, const char *name) {
+			return menu.findChild<QAction *>(QLatin1String(name));
+		};
+		const auto selected = [](FileCompareView &view, int side) {
+			return view.paneForTest(side)->textCursor().selectedText();
+		};
+
+		// which items each pane offers, and their names
+		{
+			FileCompareView view;
+			open(view, { linesLeft, linesRight });
+			QMenu left;
+			view.buildPaneMenu(0, &left);
+			QMenu right;
+			view.buildPaneMenu(1, &right);
+			printf("  2-way left: %s\n", qPrintable(itemNames(left)));
+			check(itemNames(left) == QStringLiteral("paneCopy_0_1 paneCopy_1_0 - paneCopyLines_0_1 "
+					"paneCopyLines_1_0 - paneDiffToClipboard_0 paneDiffToClipboard_1 -"),
+				"2-way, left pane: to and from the right");
+			check(itemNames(right) == QStringLiteral("paneCopy_1_0 paneCopy_0_1 - paneCopyLines_1_0 "
+					"paneCopyLines_0_1 - paneDiffToClipboard_0 paneDiffToClipboard_1 -"),
+				"2-way, right pane: to and from the left");
+			QAction *toRight = item(left, "paneCopy_0_1");
+			QAction *fromRight = item(left, "paneCopy_1_0");
+			check(toRight != nullptr && toRight->text() == FileCompareView::tr("C&opy to Right")
+				&& toRight->shortcut() == QKeySequence(Qt::ALT | Qt::Key_Right)
+				&& fromRight != nullptr && fromRight->text() == FileCompareView::tr("Copy fro&m Right")
+				&& fromRight->shortcut() == QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_Left)
+				&& item(left, "paneSelectLineDiff")->shortcut() == QKeySequence(Qt::Key_F4)
+				&& item(left, "paneGoTo") != nullptr,
+				"their names and keys");
+		}
+		{
+			FileCompareView view;
+			open(view, { threeLeft, threeMiddle, threeRight });
+			QMenu left;
+			view.buildPaneMenu(0, &left);
+			QMenu middle;
+			view.buildPaneMenu(1, &middle);
+			QMenu right;
+			view.buildPaneMenu(2, &right);
+			const auto copies = [&itemNames](QMenu &menu) {
+				return itemNames(menu).section(QLatin1Char('-'), 0, 0).trimmed();
+			};
+			printf("  3-way: %s / %s / %s\n", qPrintable(copies(left)), qPrintable(copies(middle)),
+				qPrintable(copies(right)));
+			check(copies(left) == QStringLiteral("paneCopy_0_1 paneCopy_0_2 paneCopy_1_0 paneCopy_2_0")
+				&& copies(middle) == QStringLiteral("paneCopy_1_0 paneCopy_1_2 paneCopy_0_1 paneCopy_2_1")
+				&& copies(right) == QStringLiteral("paneCopy_2_1 paneCopy_2_0 paneCopy_1_2 paneCopy_0_2"),
+				"3-way: every other pane, to and from");
+			check(item(left, "paneCopy_0_2")->shortcut().isEmpty()
+				&& item(middle, "paneCopy_1_2")->shortcut() == QKeySequence(Qt::ALT | Qt::Key_Right)
+				&& item(left, "paneDiffToClipboard_2") != nullptr
+				&& !item(left, "addToSubstitutionFilters")->isEnabled()
+				&& !item(left, "addToLineFilters")->isEnabled(),
+				"3-way: keys for neighbors only, no filters to add to");
+			// a copy to the far side
+			view.setCursorViewLineForTest(0, 1);
+			QMenu menu;
+			view.buildPaneMenu(0, &menu);
+			item(menu, "paneCopy_0_2")->trigger();
+			check(lines(view, 2) == QStringLiteral("head|abc one|tail")
+				&& lines(view, 1) == QStringLiteral("head|xyz one|tail"),
+				"3-way: Copy to Right from the left pane");
+		}
+
+		// what is on offer goes by the cursor, the selection and read-only
+		{
+			FileCompareView view;
+			view.setReadOnlySides({ false, true });
+			open(view, { linesLeft, linesRight });
+			view.setCursorViewLineForTest(0, 0);
+			QMenu outside;
+			view.buildPaneMenu(0, &outside);
+			view.setCursorViewLineForTest(0, 2);
+			QMenu inside;
+			view.buildPaneMenu(0, &inside);
+			check(!item(outside, "paneCopy_1_0")->isEnabled()
+				&& !item(outside, "paneDiffToClipboard_0")->isEnabled()
+				&& !item(outside, "addToLineFilters")->isEnabled(),
+				"nothing to copy out of the differences");
+			check(item(inside, "paneCopy_1_0")->isEnabled()
+				&& !item(inside, "paneCopy_0_1")->isEnabled()
+				&& item(inside, "paneDiffToClipboard_1")->isEnabled(),
+				"in a difference, but not into a read-only pane");
+			view.selectForTest(0, 0, 0, 0, 2);
+			QMenu noDiff;
+			view.buildPaneMenu(0, &noDiff);
+			view.selectForTest(0, 1, 0, 2, 1);
+			QMenu someDiff;
+			view.buildPaneMenu(0, &someDiff);
+			check(!item(noDiff, "paneCopy_1_0")->isEnabled()
+				&& item(noDiff, "addToLineFilters")->isEnabled()
+				&& item(someDiff, "paneCopy_1_0")->isEnabled(),
+				"a selection counts by the differences it takes in");
+		}
+
+		// a right click (OnRButtonDown, OnRButtonUp), the menu handed over
+		// instead of opened, and Undo and Redo of the whole comparison
+		{
+			FileCompareView view;
+			view.resize(900, 600);
+			view.show();
+			open(view, { linesLeft, linesRight });
+			QCoreApplication::processEvents();
+			DiffTextEdit *pane = view.paneForTest(0);
+			const auto rightClick = [pane](int line, int character) {
+				QTextCursor at(pane->document()->findBlockByNumber(line));
+				at.setPosition(at.position() + character);
+				const QPoint point = pane->cursorRect(at).center();
+				QContextMenuEvent event(QContextMenuEvent::Mouse, point,
+					pane->viewport()->mapToGlobal(point));
+				QCoreApplication::sendEvent(pane->viewport(), &event);
+			};
+			QAction *undoOffered = nullptr;
+			bool undoEnabled = false;
+			DiffTextEdit::setContextMenuPresenterForTest([&](QMenu *menu) {
+				undoOffered = menu->findChild<QAction *>(QStringLiteral("edit-undo"));
+				if (undoOffered != nullptr)
+				{
+					undoEnabled = undoOffered->isEnabled();
+					undoOffered->trigger();
+				}
+			});
+			view.selectForTest(0, 1, 0, 2, 2);
+			rightClick(1, 1);
+			check(selected(view, 0).size() > 2, "a right click in the selection keeps it");
+			rightClick(3, 1);
+			check(selected(view, 0).isEmpty() && view.cursorViewLineForTest(0) == 3,
+				"a right click elsewhere puts the cursor there");
+			view.gotoFirstDiff();
+			check(view.currentDiffForTest() == 0, "(a current difference)");
+			rightClick(0, 1);
+			check(view.currentDiffForTest() == -1 && view.cursorViewLineForTest(0) == 0,
+				"and out of the current difference, none is current");
+			// the copy went into the right pane: the left pane's menu undoes it
+			view.setCursorViewLineForTest(0, 2);
+			view.copyCurrentDiff(0, 1, false);
+			const QString copied = lines(view, 1);
+			rightClick(2, 1);
+			check(copied == lines(view, 0) && undoEnabled
+				&& lines(view, 1) == QStringLiteral("top|b1|b2|b3|bottom"),
+				"Undo in one pane's menu undoes the copy into the other");
+			DiffTextEdit::setContextMenuPresenterForTest({});
+		}
+
+		// Copy Selected Lines
+		{
+			FileCompareView view;
+			open(view, { linesLeft, linesRight });
+			view.setCursorViewLineForTest(0, 2);
+			{
+				QMenu menu;
+				view.buildPaneMenu(0, &menu);
+				item(menu, "paneCopyLines_0_1")->trigger();
+			}
+			printf("  the cursor's line: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("top|b1|a2|b3|bottom"), "no selection: the cursor's line");
+			view.undoActive();
+			check(lines(view, 1) == QStringLiteral("top|b1|b2|b3|bottom"), "and undone");
+			// by lines, whatever the granularity says
+			mgr->Set(OPT_COPY_GRANULARITY, 3);
+			view.selectForTest(0, 2, 1, 3, 1);
+			{
+				QMenu menu;
+				view.buildPaneMenu(0, &menu);
+				item(menu, "paneCopyLines_0_1")->trigger();
+			}
+			printf("  the selected lines: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("top|b1|a2|a3|bottom"),
+				"a selection: its lines, whole, with Character in the options");
+			view.undoActive();
+			// into the pane it is selected in
+			view.selectForTest(0, 1, 0, 1, 1);
+			{
+				QMenu menu;
+				view.buildPaneMenu(0, &menu);
+				item(menu, "paneCopyLines_1_0")->trigger();
+			}
+			check(lines(view, 0) == QStringLiteral("top|b1|a2|a3|bottom"),
+				"Copy Selected Lines from Right, into the left pane");
+		}
+
+		// to the clipboard
+		{
+			FileCompareView view;
+			open(view, { linesLeft, ghostRight });
+			view.setCursorViewLineForTest(0, 2);
+			{
+				QMenu menu;
+				view.buildPaneMenu(0, &menu);
+				item(menu, "paneDiffToClipboard_0")->trigger();
+			}
+			const QString first = QGuiApplication::clipboard()->text();
+			{
+				QMenu menu;
+				view.buildPaneMenu(0, &menu);
+				item(menu, "paneDiffToClipboard_1")->trigger();
+			}
+			const QString second = QGuiApplication::clipboard()->text();
+			check(first == QStringLiteral("a1\na2\na3\n") && second == QStringLiteral("b1\n"),
+				"a side's text of the difference, without ghost lines");
+		}
+
+		// Select Line Difference, and the difference it leaves selected
+		{
+			FileCompareView view;
+			open(view, { inlineLeft, inlineRight });
+			view.setCursorViewLineForTest(0, 1);
+			view.selectLineDiff(false);
+			check(selected(view, 0) == QStringLiteral("aaa") && selected(view, 1) == QStringLiteral("AAA"),
+				"F4: the first difference in the line, in both panes");
+			view.selectLineDiff(false);
+			check(selected(view, 0) == QStringLiteral("bbb") && selected(view, 1) == QStringLiteral("BBB"),
+				"F4 again: the next one");
+			view.selectLineDiff(false);
+			check(selected(view, 0) == QStringLiteral("aaa"), "past the last: round the file");
+			view.selectLineDiff(true);
+			check(selected(view, 0) == QStringLiteral("bbb"), "Shift+F4: the previous one");
+			mgr->Set(OPT_COPY_GRANULARITY, 1);
+			view.copyToRight();
+			printf("  inline diff after F4: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("head|x AAA y bbb z|tail"),
+				"by inline diff: the difference F4 selected");
+			view.undoActive();
+			mgr->Set(OPT_COPY_GRANULARITY, 3);
+			view.setCursorViewLineForTest(0, 1);
+			view.selectLineDiff(false);
+			view.copyToRight();
+			check(lines(view, 1) == QStringLiteral("head|x aaa y BBB z|tail"),
+				"by character: the characters it selected");
+			view.undoActive();
+			// out of date: as greyed out, nothing happens
+			shown.clear();
+			view.setCursorViewLineForTest(0, 1);
+			view.typeAtForTest(0, 0, QStringLiteral("q"));
+			view.selectLineDiff(false);
+			check(!view.lineDiffSelectable() && selected(view, 0).isEmpty() && shown.isEmpty(),
+				"out of date: nothing selected");
+		}
+		{
+			FileCompareView view;
+			open(view, { same, ghostRight });
+			shown.clear();
+			view.selectLineDiff(false);
+			check(shown == QStringList{ FileCompareView::tr("No differences found to select") },
+				"identical files: says there is none");
+		}
+
+		// Add to Line Filters: the selection's text, filters switched on
+		{
+			FileCompareView view;
+			open(view, { stampLeft, stampRight });
+			check(view.diffCount() == 1 && !lm::lineFiltersEnabled(), "(a difference, no filter in use)");
+			view.selectForTest(0, 1, 0, 1, 6);
+			{
+				QMenu menu;
+				view.buildPaneMenu(0, &menu);
+				item(menu, "addToLineFilters")->trigger();
+			}
+			LineFiltersList filters;
+			lm::copyLineFilters(&filters);
+			printf("  line filter: %s\n", filters.GetCount() > 0 ? filters.GetAt(0).filterStr.c_str() : "(none)");
+			check(filters.GetCount() == 1 && filters.GetAt(0).enabled && lm::lineFiltersEnabled()
+				&& view.diffCount() == 0 && view.ignoredDiffCount() == 1,
+				"the difference is ignored now");
+			lm::saveLineFilters(false, LineFiltersList());
+		}
+
+		// Add to Substitution Filters: the difference as a pair, if Yes
+		{
+			FileCompareView view;
+			open(view, { inlineLeft, inlineRight });
+			view.setCursorViewLineForTest(0, 1);
+			const QString pair = QStringLiteral("\"aaa\" <-> \"AAA\"");
+			const auto add = [&]() {
+				QMenu menu;
+				view.buildPaneMenu(0, &menu);
+				item(menu, "addToSubstitutionFilters")->trigger();
+			};
+			answer = false;
+			add();
+			SubstitutionFiltersList pairs;
+			lm::copySubstitutionFilters(&pairs);
+			check(asked.contains(pair) && pairs.GetCount() == 0 && selected(view, 0) == QStringLiteral("aaa"),
+				"asks, and No adds nothing");
+			view.setCursorViewLineForTest(0, 1);
+			answer = true;
+			add();
+			lm::copySubstitutionFilters(&pairs);
+			check(pairs.GetCount() == 1 && pairs.GetEnabled()
+				&& pairs.GetAt(0).pattern == "aaa" && pairs.GetAt(0).replacement == "AAA"
+				&& lm::currentSubstitutionFilters() != nullptr,
+				"Yes adds the pair, the filters switched on");
+			shown.clear();
+			asked.clear();
+			view.setCursorViewLineForTest(0, 1);
+			add();
+			check(asked.isEmpty() && shown.size() == 1 && shown.first().contains(pair)
+				&& shown.first().startsWith(
+					FileCompareView::tr("The pair is already in the Substitution Filters list")),
+				"a pair it has: says so, asks nothing");
+			SubstitutionFiltersList none;
+			none.SetEnabled(false);
+			lm::saveSubstitutionFilters(none);
+		}
+		{
+			FileCompareView view;
+			open(view, { same, ghostRight });
+			shown.clear();
+			view.addLineDiffToSubstitutionFilters(0);
+			check(shown == QStringList{
+					FileCompareView::tr("No differences found to add as substitution filter") },
+				"identical files: none to add");
+		}
+
+		// the Edit menu's item and the keys without a menu item
+		{
+			MainWindow window;
+			window.openFileComparison({ linesLeft, linesRight });
+			QCoreApplication::processEvents();
+			auto *view = window.findChild<FileCompareView *>();
+			if (view == nullptr)
+				return 2;
+			const auto trigger = [&window](const char *name) {
+				QAction *action = window.findChild<QAction *>(QLatin1String(name));
+				if (action == nullptr)
+					std::exit(2);
+				action->trigger();
+			};
+			view->setCursorViewLineForTest(0, 1);
+			trigger("editSelectLineDiff");
+			const QString forward = selected(*view, 0);
+			trigger("editSelectPrevLineDiff");
+			check(forward == QStringLiteral("a") && !selected(*view, 0).isEmpty(),
+				"Edit > Select Line Difference and Shift+F4");
+			view->setCursorViewLineForTest(0, 2);
+			trigger("editDiffToClipboard2");
+			check(QGuiApplication::clipboard()->text() == QStringLiteral("b1\nb2\nb3\n"),
+				"Ctrl+2: the right side's text");
+			view->setCursorViewLineForTest(1, 2);
+			trigger("mergeCopyFromLeft");
+			check(lines(*view, 1) == lines(*view, 0), "Alt+Shift+Right: from the left, into the right pane");
+			view->undoActive();
+			view->setCursorViewLineForTest(0, 2);
+			trigger("mergeCopyFromRight");
+			check(lines(*view, 0) == QStringLiteral("top|b1|b2|b3|bottom"),
+				"Alt+Shift+Left: from the right, into the left pane");
+		}
+
+		lm::setMessageSinkForTest({});
+		lm::setQuestionSinkForTest({});
+		mgr->Set(OPT_COPY_GRANULARITY, mgr->GetDefault<int>(OPT_COPY_GRANULARITY));
+		printf("pane menu: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestCopyGranularityOpt))
+	{
+		// WinMerge's copy with text selected (CMergeEditView::OnX2Y), as the
+		// copy granularity of Editor > Compare/Merge says
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [&dir](const char *name, const QByteArray &bytes)
+		{
+			const QString path = dir.filePath(QString::fromLatin1(name));
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+			return path;
+		};
+		const QString wordsLeft = write("words_l.txt",
+			"same\nalpha beta gamma\nsame2\none two three\nsame3\n");
+		const QString wordsRight = write("words_r.txt",
+			"same\nalpha BETA gamma\nsame2\none TWO three\nsame3\n");
+		const QString linesLeft = write("lines_l.txt", "top\na1\na2\na3\nbottom\n");
+		const QString linesRight = write("lines_r.txt", "top\nb1\nb2\nb3\nbottom\n");
+		const QString ghostRight = write("ghost_r.txt", "top\nb1\nbottom\n");
+		const QString inlineLeft = write("inline_l.txt", "head\nx aaa y bbb z\ntail\n");
+		const QString inlineRight = write("inline_r.txt", "head\nx AAA y BBB z\ntail\n");
+		const QString threeLeft = write("three_l.txt", "head\nabc one\ntail\n");
+		const QString threeMiddle = write("three_m.txt", "head\nxyz one\ntail\n");
+		const QString threeRight = write("three_r.txt", "head\nabc one\ntail\n");
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%-58s %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		COptionsMgr *mgr = GetOptionsMgr();
+		if (mgr == nullptr)
+			return 2;
+		const auto lines = [](FileCompareView &view, int side)
+		{
+			return view.realLinesForTest(side).join(QLatin1Char('|'));
+		};
+		const auto open = [](FileCompareView &view, const QStringList &paths)
+		{
+			QString error;
+			if (!view.compare(paths, &error))
+				std::exit(2);
+		};
+
+		// the page: by character of four, which Defaults gives back
+		{
+			OptionsDialog dialog;
+			QWidget *page = dialog.pageForTest(OptionsDialog::EditorCompareMergePage);
+			auto *granularity = page->findChild<QComboBox *>(QStringLiteral("copyGranularity"));
+			if (granularity == nullptr)
+				return 2;
+			check(granularity->count() == 4 && granularity->currentIndex() == 3,
+				"Character by default, of four");
+			granularity->setCurrentIndex(0);
+			dialog.selectCategoryForTest(10);
+			dialog.restoreDefaultsForTest();
+			check(granularity->currentIndex() == 3, "Defaults gives Character back");
+		}
+
+		// by character: the very characters, into the other pane or the
+		// active one, one undo step
+		{
+			mgr->Set(OPT_COPY_GRANULARITY, 3);
+			FileCompareView view;
+			open(view, { wordsLeft, wordsRight });
+			view.selectForTest(0, 1, 6, 1, 8);
+			view.copyToRight();
+			printf("  right: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("same|alpha beTA gamma|same2|one TWO three|same3")
+				&& view.diffCount() == 2, "by character: the characters selected");
+			view.undoActive();
+			check(lines(view, 1) == QStringLiteral("same|alpha BETA gamma|same2|one TWO three|same3"),
+				"undone in one step");
+			view.selectForTest(0, 1, 6, 1, 8);
+			view.copyToLeft();
+			printf("  left: %s\n", qPrintable(lines(view, 0)));
+			check(lines(view, 0) == QStringLiteral("same|alpha BEta gamma|same2|one two three|same3"),
+				"into the pane they are selected in");
+			view.undoActive();
+			view.selectForTest(0, 1, 6, 1, 8);
+			view.copyToRight(true);
+			// OnNextdiff from the cursor's line, the first of the difference
+			// part of which is left
+			check(view.currentDiffForTest() == 0, "and advance: the difference from the cursor on");
+		}
+
+		// by line and by character over the same lines
+		{
+			FileCompareView view;
+			open(view, { linesLeft, linesRight });
+			mgr->Set(OPT_COPY_GRANULARITY, 2);
+			view.selectForTest(0, 2, 1, 3, 1);
+			view.copyToRight();
+			printf("  by line: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("top|b1|a2|a3|bottom"),
+				"by line: the lines selected, whole");
+			view.undoActive();
+			mgr->Set(OPT_COPY_GRANULARITY, 3);
+			view.selectForTest(0, 2, 1, 3, 1);
+			view.copyToRight();
+			printf("  by character: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("top|b1|b2|a3|bottom"),
+				"by character: from the selection's start");
+			// selected in the target: Copy to Right from the right pane
+			view.undoActive();
+			view.selectForTest(1, 2, 1, 3, 1);
+			view.copyToRight();
+			printf("  selected in the target: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("top|b1|b2|a3|bottom"),
+				"by character, selected in the target");
+		}
+
+		// lines copied onto ghost lines, and undone
+		{
+			mgr->Set(OPT_COPY_GRANULARITY, 2);
+			FileCompareView view;
+			open(view, { linesLeft, ghostRight });
+			view.selectForTest(0, 2, 0, 3, 2);
+			view.copyToRight();
+			printf("  onto ghosts: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("top|b1|a2|a3|bottom"),
+				"by line onto ghost lines");
+			view.undoActive();
+			check(lines(view, 1) == QStringLiteral("top|b1|bottom"), "and undone");
+			// everything selected, by character: the differences whole
+			mgr->Set(OPT_COPY_GRANULARITY, 3);
+			view.selectForTest(0, 0, 0, 4, 6);
+			view.copyToRight();
+			printf("  all by character: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == lines(view, 0) && view.diffCount() == 0,
+				"all selected by character: the files alike");
+		}
+
+		// by diff hunk: every difference touched, whole
+		{
+			mgr->Set(OPT_COPY_GRANULARITY, 0);
+			FileCompareView view;
+			open(view, { wordsLeft, wordsRight });
+			view.selectForTest(0, 1, 7, 3, 2);
+			view.copyToRight();
+			check(lines(view, 1) == lines(view, 0) && view.diffCount() == 0,
+				"by diff hunk: every difference touched, whole");
+		}
+
+		// by inline diff: those the selection takes in, against by character
+		{
+			FileCompareView view;
+			open(view, { inlineLeft, inlineRight });
+			mgr->Set(OPT_COPY_GRANULARITY, 1);
+			view.selectForTest(0, 1, 1, 1, 6);
+			view.copyToRight();
+			printf("  one inline diff: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("head|x aaa y BBB z|tail"),
+				"by inline diff: the one taken in");
+			view.undoActive();
+			view.selectForTest(0, 1, 3, 1, 10);
+			view.copyToRight();
+			check(lines(view, 1) == QStringLiteral("head|x aaa y bbb z|tail")
+				&& view.diffCount() == 0, "by inline diff: both touched, whole");
+			view.undoActive();
+			mgr->Set(OPT_COPY_GRANULARITY, 3);
+			view.selectForTest(0, 1, 3, 1, 10);
+			view.copyToRight();
+			printf("  same by character: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == QStringLiteral("head|x Aaa y bbB z|tail"),
+				"by character: the characters of both");
+		}
+
+		// by inline diff over two differences: the first whole, the last's
+		// inline difference taken in
+		{
+			mgr->Set(OPT_COPY_GRANULARITY, 1);
+			FileCompareView view;
+			open(view, { wordsLeft, wordsRight });
+			view.selectForTest(0, 1, 7, 3, 5);
+			view.copyToRight();
+			printf("  over two: %s\n", qPrintable(lines(view, 1)));
+			check(lines(view, 1) == lines(view, 0) && view.diffCount() == 0,
+				"by inline diff over two differences");
+		}
+
+		// 3-way, from the middle pane
+		{
+			mgr->Set(OPT_COPY_GRANULARITY, 3);
+			FileCompareView view;
+			open(view, { threeLeft, threeMiddle, threeRight });
+			view.selectForTest(1, 1, 0, 1, 2);
+			view.copyToRight();
+			printf("  3-way right: %s\n", qPrintable(lines(view, 2)));
+			check(lines(view, 2) == QStringLiteral("head|xyc one|tail")
+				&& lines(view, 0) == QStringLiteral("head|abc one|tail"),
+				"3-way: from the middle pane to the right");
+		}
+
+		mgr->Set(OPT_COPY_GRANULARITY, mgr->GetDefault<int>(OPT_COPY_GRANULARITY));
+		printf("copy granularity: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestAboutOpt))
+	{
+		AboutDialog dialog;
+		const QString version = AboutDialog::versionText();
+		const QString contributors = AboutDialog::contributorsMarkdown();
+		const auto *copyright = dialog.findChild<QLabel *>(QStringLiteral("mergeDeskCopyright"));
+		// the Crystal Edit parser authors ask for an About-box credit
+		const QStringList mustCredit = { QStringLiteral("Stcherbatchenko"),
+			QStringLiteral("Ferdinand Prantl"), QStringLiteral("YuanShoyan"),
+			QStringLiteral("wiera987"), QStringLiteral("devmynote"),
+			QStringLiteral("Javier Miguel"), QStringLiteral("H. Saido"),
+			QStringLiteral("voidray"), QStringLiteral("Przemys"),
+			QStringLiteral("Iago Passos"), QStringLiteral("Dean Grimm") };
+		bool ok = version.contains(QApplication::applicationVersion())
+			&& !AboutDialog::platformText().isEmpty()
+			&& AboutDialog::homepageUrl() == QUrl(QStringLiteral("https://github.com/Davoda1/MergeDesk"))
+			&& dialog.windowTitle() == AboutDialog::tr("About MergeDesk")
+			&& copyright != nullptr
+			&& copyright->text() == QStringLiteral("Copyright (C) 2026 davoda1")
+			&& !contributors.isEmpty();
+		for (const QString &name : mustCredit)
+			if (!contributors.contains(name))
+			{
+				fprintf(stderr, "missing credit: %s\n", qPrintable(name));
+				ok = false;
+			}
+		printf("%s | %s | contributors: %lld chars, ok: %d\n",
+			qPrintable(version), qPrintable(AboutDialog::platformText()),
+			static_cast<long long>(contributors.size()), ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestAppMenuOpt))
+	{
+		// Qt moves menu actions into the macOS application menu by role;
+		// a text heuristic once promoted the pt-BR "Sobreposicao" submenu
+		// to "About", hiding the real About. Only the native menu tells.
+#ifdef Q_OS_MACOS
+		if (QGuiApplication::platformName() != QStringLiteral("cocoa"))
+		{
+			printf("skipped: needs the cocoa platform\n");
+			return 0;
+		}
+		MainWindow window;
+		window.show();
+		window.raise();
+		window.activateWindow();
+		lm::activateAppForTest();
+		// macOS installs a window's menu bar only once it is active: wait
+		// for the app's own menus to appear next to the application menu
+		// (a terminal keeping the focus made this check flaky)
+		for (int i = 0; i < 120; ++i)
+		{
+			QThread::msleep(25);
+			QCoreApplication::processEvents();
+			if (lm::appMenuItemsForTest(QStringLiteral("*")).size() > 3)
+				break;
+		}
+		const QStringList items = lm::appMenuItemsForTest();
+		bool ok = !items.isEmpty()
+			&& items.first().endsWith(QLatin1String("\t0"));
+		// the Help menu is handed to macOS, which tops it with its search
+		// field over every menu, whatever its title in the language in use
+		const QString helpTitle = MainWindow::tr("&Help").remove(QLatin1Char('&'));
+		const QString helpMenu = lm::helpMenuTitleForTest();
+		printf("help menu macOS searches from: %s\n", qPrintable(helpMenu));
+		ok = ok && !helpTitle.isEmpty() && helpMenu == helpTitle;
+		// (Qt's own name for the entry, in the language in use: held in
+		// variables so lupdate leaves it to Qt's catalog)
+		const char *appMenuContext = "MAC_APPLICATION_MENU";
+		const char *servicesText = "Services";
+		const QString services = QCoreApplication::translate(appMenuContext, servicesText);
+		for (const QString &item : items)
+		{
+			printf("%s\n", qPrintable(item));
+			const QString title = item.section(QLatin1Char('\t'), 0, 0);
+			const bool submenu = item.endsWith(QLatin1String("\t1"));
+			// the Services entry is the only application-menu item that
+			// legitimately opens a submenu
+			if (submenu && !title.startsWith(services)
+				&& !title.startsWith(QStringLiteral("Servi")))
+				ok = false;
+		}
+		// the overlay submenu belongs to the Image menu; macOS installs the
+		// window's menus only while the app is frontmost, which a test run
+		// from a terminal cannot force (cooperative activation), so this
+		// half is checked only when the menus are there
+		const bool installed =
+			lm::appMenuItemsForTest(QStringLiteral("*")).size() > 3;
+		if (installed)
+		{
+			// the two menus by their names in the language in use (the
+			// German overlay, "Überlagerung", starts like its "About")
+			const QString imageTitle = MainWindow::tr("&Image").remove(QLatin1Char('&'));
+			const QString overlayTitle = MainWindow::tr("&Overlay").remove(QLatin1Char('&'));
+			const QStringList imageItems = lm::appMenuItemsForTest(imageTitle);
+			bool overlayHome = false;
+			for (const QString &item : imageItems)
+				if (item.startsWith(overlayTitle) && item.endsWith(QLatin1String("\t1")))
+					overlayHome = true;
+			printf("overlay submenu in the Image menu: %d\n", overlayHome);
+			ok = ok && overlayHome;
+		}
+		else
+			printf("window menus not installed (app not frontmost): Image menu check skipped\n");
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+#else
+		printf("skipped: macOS only\n");
+		return 0;
+#endif
+	}
+
+	if (parser.isSet(selftestFolder3OpsOpt))
+	{
+		// WinMerge's 3-way DirView operations: pairwise copies leave the
+		// row "not compared", deletes recompute from existence and drop
+		// rows that ran out of sides
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString roots[3] = { dir.filePath(QStringLiteral("A")),
+			dir.filePath(QStringLiteral("B")), dir.filePath(QStringLiteral("C")) };
+		const auto put = [&roots](int side, const QString &rel,
+			const QByteArray &content) {
+			const QString path = roots[side] + QLatin1Char('/') + rel;
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(content);
+		};
+		for (int i = 0; i < 3; ++i)
+		{
+			put(i, QStringLiteral("a.txt"), QByteArray::number(i) + "\n");
+			put(i, QStringLiteral("c.txt"), "c\n");
+			put(i, QStringLiteral("e.txt"), "e\n");
+		}
+		put(0, QStringLiteral("b.txt"), "b\n");
+		put(1, QStringLiteral("d.txt"), "d\n");
+
+		FolderCompareView view;
+		const auto wait = [&view]() {
+			for (int i = 0; i < 400 && view.isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+		view.start(QStringList{ roots[0], roots[1], roots[2] });
+		wait();
+
+		using Item = lm::FolderCompareItem;
+		bool ok = true;
+		const auto expect = [&view, &ok](const QString &name, int category,
+			const char *when) {
+			const int got = view.rowCategoryForTest(name);
+			if (got != category)
+			{
+				fprintf(stderr, "%s: %s category %d, expected %d\n",
+					when, qPrintable(name), got, category);
+				ok = false;
+			}
+		};
+
+		view.copyRowForTest(QStringLiteral("a.txt"), 0, 1);
+		expect(QStringLiteral("a.txt"), Item::NotCompared, "after copy");
+		{
+			QFile fa(roots[1] + QStringLiteral("/a.txt"));
+			if (!fa.open(QIODevice::ReadOnly))
+				std::exit(2);
+			if (fa.readAll() != "0\n")
+			{
+				fprintf(stderr, "copy did not reach the middle\n");
+				ok = false;
+			}
+		}
+		view.copyRowForTest(QStringLiteral("b.txt"), 0, 2);
+		expect(QStringLiteral("b.txt"), Item::MissingMiddle, "after copy");
+		view.deleteRowForTest(QStringLiteral("c.txt"), { 2 });
+		expect(QStringLiteral("c.txt"), Item::MissingRight, "after delete");
+		if (QFileInfo::exists(roots[2] + QStringLiteral("/c.txt")))
+		{
+			fprintf(stderr, "right c.txt still on disk\n");
+			ok = false;
+		}
+		view.deleteRowForTest(QStringLiteral("d.txt"), { 1 });
+		expect(QStringLiteral("d.txt"), -1, "after lone-side delete");
+		view.deleteRowForTest(QStringLiteral("e.txt"), { 0, 1, 2 });
+		expect(QStringLiteral("e.txt"), -1, "after delete all");
+
+		// a recompare resolves every unknown against the disk
+		view.recompare();
+		wait();
+		expect(QStringLiteral("a.txt"), Item::Different, "after recompare");
+		expect(QStringLiteral("b.txt"), Item::MissingMiddle, "after recompare");
+		expect(QStringLiteral("c.txt"), Item::MissingRight, "after recompare");
+		expect(QStringLiteral("d.txt"), -1, "after recompare");
+		expect(QStringLiteral("e.txt"), -1, "after recompare");
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFolderSyncOpt))
+	{
+		// WinMerge's UpdateChangedItem: saving a comparison opened from
+		// the folder view refreshes that row without a rescan
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString leftDir = dir.filePath(QStringLiteral("L"));
+		const QString rightDir = dir.filePath(QStringLiteral("R"));
+		QDir().mkpath(leftDir);
+		QDir().mkpath(rightDir);
+		{
+			QFile f(leftDir + QStringLiteral("/a.txt"));
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("x\n");
+		}
+		{
+			QFile f(rightDir + QStringLiteral("/a.txt"));
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("y\n");
+		}
+		MainWindow window;
+		window.openFolderComparison(QStringList{ leftDir, rightDir });
+		auto *folder = window.findChild<FolderCompareView *>();
+		if (folder == nullptr)
+			return 2;
+		for (int i = 0; i < 400 && folder->isComparingForTest(); ++i)
+		{
+			QThread::msleep(25);
+			QCoreApplication::processEvents();
+		}
+		const int before = folder->rowCategoryForTest(QStringLiteral("a.txt"));
+		folder->activateRowForTest(QStringLiteral("a.txt"));
+		QCoreApplication::processEvents();
+		FileCompareView *file = nullptr;
+		for (FileCompareView *candidate : window.findChildren<FileCompareView *>())
+			if (!candidate->paths().at(0).isEmpty())
+				file = candidate;
+		if (file == nullptr)
+		{
+			fprintf(stderr, "no file comparison opened\n");
+			return 2;
+		}
+		file->copyCurrentDiff(0);
+		QString error;
+		if (!file->saveModified(&error))
+		{
+			fprintf(stderr, "save failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		const int after = folder->rowCategoryForTest(QStringLiteral("a.txt"));
+		printf("category before: %d, after: %d\n", before, after);
+		return (before == static_cast<int>(lm::FolderCompareItem::Different)
+			&& after == static_cast<int>(lm::FolderCompareItem::Identical))
+			? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFolderContentOpt))
+	{
+		// Full Contents like WinMerge: text files diff as text, so the
+		// ignore options apply; Quick Contents above 4 MB; the Result
+		// column names the file type
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString leftDir = dir.filePath(QStringLiteral("L"));
+		const QString rightDir = dir.filePath(QStringLiteral("R"));
+		QDir().mkpath(leftDir);
+		QDir().mkpath(rightDir);
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const QByteArray big = QByteArray("line of text\n").repeated(400000);
+		write(leftDir + QStringLiteral("/same.txt"), "alpha\n");
+		write(rightDir + QStringLiteral("/same.txt"), "alpha\n");
+		write(leftDir + QStringLiteral("/spaces.txt"), "a b\n");
+		write(rightDir + QStringLiteral("/spaces.txt"), "a   b\n");
+		write(leftDir + QStringLiteral("/big.txt"), big);
+		write(rightDir + QStringLiteral("/big.txt"), big);
+		write(leftDir + QStringLiteral("/data.bin"), QByteArray("\x00\x01\x02", 3));
+		write(rightDir + QStringLiteral("/data.bin"), QByteArray("\x00\x01\x03", 3));
+
+		const auto results = [&](int ignoreWhitespace)
+		{
+			lm::setCompareOptionsForTest(ignoreWhitespace);
+			FolderCompareView view;
+			view.start(QStringList{ leftDir, rightDir });
+			for (int i = 0; i < 400 && view.isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+			QMap<QString, QString> texts;
+			for (const QString &name : { QStringLiteral("same.txt"),
+					QStringLiteral("spaces.txt"), QStringLiteral("big.txt"),
+					QStringLiteral("data.bin") })
+			{
+				texts[name] = view.rowResultForTest(name);
+				printf("ignore whitespace %d: %s -> %s\n", ignoreWhitespace,
+					qPrintable(name), qPrintable(texts[name]));
+			}
+			return texts;
+		};
+		const QMap<QString, QString> exact = results(0);
+		const QMap<QString, QString> ignoring = results(2); // ignore all
+		const QString textSame = QObject::tr("Text files are identical");
+		const QString textDiff = QObject::tr("Text files are different");
+		const QString binDiff = QObject::tr("Binary files are different");
+		return (exact[QStringLiteral("same.txt")] == textSame
+			&& exact[QStringLiteral("spaces.txt")] == textDiff
+			&& ignoring[QStringLiteral("spaces.txt")] == textSame
+			&& exact[QStringLiteral("big.txt")] == textSame
+			&& exact[QStringLiteral("data.bin")] == binDiff)
+			? 0 : 1;
+	}
+
+	if (parser.isSet(selftestCompareMethodsOpt))
+	{
+		// WinMerge's seven folder compare methods against three pairs:
+		// same bytes with another date, other bytes of the same size, and
+		// another size (the last two share one date)
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString leftDir = dir.filePath(QStringLiteral("L"));
+		const QString rightDir = dir.filePath(QStringLiteral("R"));
+		QDir().mkpath(leftDir);
+		QDir().mkpath(rightDir);
+		const QDateTime older(QDate(2020, 1, 1), QTime(10, 0));
+		const QDateTime newer(QDate(2021, 1, 1), QTime(10, 0));
+		const auto write = [](const QString &path, const QByteArray &bytes,
+			const QDateTime &mtime)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+			f.flush(); // or closing would write, and date, again
+			f.setFileTime(mtime, QFileDevice::FileModificationTime);
+		};
+		write(leftDir + QStringLiteral("/touched.txt"), "same\n", older);
+		write(rightDir + QStringLiteral("/touched.txt"), "same\n", newer);
+		write(leftDir + QStringLiteral("/edited.txt"), "aaaa\n", older);
+		write(rightDir + QStringLiteral("/edited.txt"), "bbbb\n", older);
+		write(leftDir + QStringLiteral("/grown.txt"), "a\n", older);
+		write(rightDir + QStringLiteral("/grown.txt"), "abc\n", older);
+
+		// per method: touched, edited, grown; 0 identical, 1 different
+		const int expected[lm::kCompareMethodCount][3] = {
+			{ 0, 1, 1 }, // Full Contents
+			{ 0, 1, 1 }, // Quick Contents
+			{ 0, 1, 1 }, // Binary Contents
+			{ 1, 0, 0 }, // Modified Date
+			{ 1, 0, 1 }, // Modified Date and Size
+			{ 0, 0, 1 }, // Size
+			{ 0, 0, 0 }, // Existence
+		};
+		const QString names[3] = { QStringLiteral("touched.txt"),
+			QStringLiteral("edited.txt"), QStringLiteral("grown.txt") };
+		lm::setCompareOptionsForTest(0);
+		bool ok = true;
+		for (int method = 0; method < lm::kCompareMethodCount; ++method)
+		{
+			lm::setCompareMethodForTest(method);
+			FolderCompareView view;
+			view.start(QStringList{ leftDir, rightDir });
+			for (int i = 0; i < 400 && view.isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+			const bool shown =
+				view.compareMethodTextForTest() == lm::compareMethodName(method);
+			printf("%-24s", qPrintable(view.compareMethodTextForTest()));
+			for (int f = 0; f < 3; ++f)
+			{
+				const int category = view.rowCategoryForTest(names[f]);
+				const int want = expected[method][f] == 0
+					? static_cast<int>(lm::FolderCompareItem::Identical)
+					: static_cast<int>(lm::FolderCompareItem::Different);
+				printf("  %s=%d%s", qPrintable(names[f]), category,
+					category == want ? "" : " (wrong)");
+				ok = ok && category == want;
+			}
+			printf("\n");
+			ok = ok && shown;
+			// no content compare ran: the Result column says "Files are ..."
+			if (method == 3) // Modified Date
+				ok = ok && view.rowResultForTest(names[0])
+					== QObject::tr("Files are different");
+		}
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestShowFiltersOpt))
+	{
+		// WinMerge's View menu filters: switching one off hides exactly
+		// the rows it names, 2- and 3-way; nothing is saved
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const QString a = dir.filePath(QStringLiteral("A"));
+		const QString b = dir.filePath(QStringLiteral("B"));
+		const QString c = dir.filePath(QStringLiteral("C"));
+		const QString l2 = dir.filePath(QStringLiteral("L2"));
+		const QString r2 = dir.filePath(QStringLiteral("R2"));
+		write(l2 + QStringLiteral("/same.txt"), "x\n");
+		write(r2 + QStringLiteral("/same.txt"), "x\n");
+		write(l2 + QStringLiteral("/diff.txt"), "x\n");
+		write(r2 + QStringLiteral("/diff.txt"), "y\n");
+		write(l2 + QStringLiteral("/left.txt"), "x\n");
+		write(r2 + QStringLiteral("/right.txt"), "x\n");
+		write(l2 + QStringLiteral("/data.bin"), QByteArray("\x00\x01", 2));
+		write(r2 + QStringLiteral("/data.bin"), QByteArray("\x00\x02", 2));
+		// 3-way: which side differs, all three differ, middle only,
+		// missing on the left only
+		write(a + QStringLiteral("/leftdiff.txt"), "x\n");
+		write(b + QStringLiteral("/leftdiff.txt"), "a\n");
+		write(c + QStringLiteral("/leftdiff.txt"), "a\n");
+		write(a + QStringLiteral("/middiff.txt"), "a\n");
+		write(b + QStringLiteral("/middiff.txt"), "x\n");
+		write(c + QStringLiteral("/middiff.txt"), "a\n");
+		write(a + QStringLiteral("/rightdiff.txt"), "a\n");
+		write(b + QStringLiteral("/rightdiff.txt"), "a\n");
+		write(c + QStringLiteral("/rightdiff.txt"), "x\n");
+		write(a + QStringLiteral("/alldiff.txt"), "a\n");
+		write(b + QStringLiteral("/alldiff.txt"), "b\n");
+		write(c + QStringLiteral("/alldiff.txt"), "c\n");
+		write(b + QStringLiteral("/middleonly.txt"), "x\n");
+		write(b + QStringLiteral("/noleft.txt"), "x\n");
+		write(c + QStringLiteral("/noleft.txt"), "x\n");
+
+		lm::setCompareMethodForTest(0);
+		lm::setCompareOptionsForTest(0);
+		using F = FolderCompareView::ShowFilter;
+		// one filter off at a time, from the defaults: the rows that
+		// must disappear, every other row staying listed
+		const auto check = [](FolderCompareView &view, const QStringList &all,
+			F filter, const QStringList &gone)
+		{
+			for (int f = 0; f < FolderCompareView::ShowFilterCount; ++f)
+				view.setShowFilterForTest(static_cast<F>(f),
+					f != FolderCompareView::ShowSkipped);
+			view.setShowFilterForTest(filter, false);
+			bool ok = view.hiddenRowsForTest() == gone.size();
+			for (const QString &name : all)
+			{
+				const bool shown = view.rowShownForTest(name);
+				ok = ok && shown != gone.contains(name);
+				if (shown == gone.contains(name))
+					printf("filter %d: %s wrongly %s\n", int(filter),
+						qPrintable(name), shown ? "shown" : "hidden");
+			}
+			return ok;
+		};
+		const auto run = [](const QStringList &dirs, FolderCompareView &view)
+		{
+			view.start(dirs);
+			for (int i = 0; i < 400 && view.isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+
+		FolderCompareView two;
+		run(QStringList{ l2, r2 }, two);
+		const QStringList twoRows{ QStringLiteral("same.txt"),
+			QStringLiteral("diff.txt"), QStringLiteral("left.txt"),
+			QStringLiteral("right.txt"), QStringLiteral("data.bin") };
+		bool ok = check(two, twoRows, F::ShowIdentical, { QStringLiteral("same.txt") })
+			&& check(two, twoRows, F::ShowDifferent,
+				{ QStringLiteral("diff.txt"), QStringLiteral("data.bin") })
+			&& check(two, twoRows, F::ShowUniqueLeft, { QStringLiteral("left.txt") })
+			&& check(two, twoRows, F::ShowUniqueRight, { QStringLiteral("right.txt") })
+			&& check(two, twoRows, F::ShowBinaries, { QStringLiteral("data.bin") });
+
+		FolderCompareView three;
+		run(QStringList{ a, b, c }, three);
+		const QStringList threeRows{ QStringLiteral("leftdiff.txt"),
+			QStringLiteral("middiff.txt"), QStringLiteral("rightdiff.txt"),
+			QStringLiteral("alldiff.txt"), QStringLiteral("middleonly.txt"),
+			QStringLiteral("noleft.txt") };
+		ok = ok
+			&& check(three, threeRows, F::ShowDifferentLeftOnly,
+				{ QStringLiteral("leftdiff.txt"), QStringLiteral("noleft.txt") })
+			&& check(three, threeRows, F::ShowDifferentMiddleOnly,
+				{ QStringLiteral("middiff.txt") })
+			&& check(three, threeRows, F::ShowDifferentRightOnly,
+				{ QStringLiteral("rightdiff.txt") })
+			&& check(three, threeRows, F::ShowDifferent, { QStringLiteral("alldiff.txt") })
+			&& check(three, threeRows, F::ShowUniqueMiddle,
+				{ QStringLiteral("middleonly.txt") })
+			&& check(three, threeRows, F::ShowMissingLeftOnly,
+				{ QStringLiteral("noleft.txt") });
+		printf("show filters: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestMarkerOpt))
+	{
+		// issue #6: text present on one side only must leave a
+		// zero-length marker span at the other side's insertion point
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString leftPath = dir.filePath(QStringLiteral("l.txt"));
+		const QString rightPath = dir.filePath(QStringLiteral("r.txt"));
+		{
+			QFile f(leftPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("this is a test\nword only here\n");
+		}
+		{
+			QFile f(rightPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("this is test\nword here\n");
+		}
+		FileCompareView view;
+		QString error;
+		if (!view.compare(leftPath, rightPath, &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		const int leftMarkers = view.insertionMarkersForTest(0);
+		const int rightMarkers = view.insertionMarkersForTest(1);
+		FileCompareView swapped;
+		if (!swapped.compare(rightPath, leftPath, &error))
+			return 2;
+		const int swappedLeft = swapped.insertionMarkersForTest(0);
+		const int swappedRight = swapped.insertionMarkersForTest(1);
+		printf("markers L/R: %d/%d, swapped L/R: %d/%d\n",
+			leftMarkers, rightMarkers, swappedLeft, swappedRight);
+		return (leftMarkers == 0 && rightMarkers == 2
+			&& swappedLeft == 2 && swappedRight == 0) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestServiceOpt))
+	{
+		// cold start: the app opens its blank placeholder, then the
+		// Finder service delivers a pair; the placeholder must go
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString leftPath = dir.filePath(QStringLiteral("a.txt"));
+		const QString rightPath = dir.filePath(QStringLiteral("b.txt"));
+		{
+			QFile f(leftPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("x\n");
+		}
+		{
+			QFile f(rightPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("y\n");
+		}
+		MainWindow window;
+		window.openBlankComparison();
+		window.handleIncomingPaths({ leftPath, rightPath });
+		QCoreApplication::processEvents();
+		const auto tabs = window.findChildren<FileCompareView *>();
+		bool blankLeft = false;
+		for (const FileCompareView *view : tabs)
+		{
+			bool blank = true;
+			for (const QString &path : view->paths())
+				blank = blank && path.isEmpty();
+			blankLeft = blankLeft || blank;
+		}
+		printf("comparisons: %lld, placeholder left: %d\n",
+			static_cast<long long>(tabs.size()), blankLeft);
+		return (tabs.size() == 1 && !blankLeft) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFolder3Opt))
+	{
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString roots[3] = { dir.filePath(QStringLiteral("A")),
+			dir.filePath(QStringLiteral("B")), dir.filePath(QStringLiteral("C")) };
+		const auto put = [&roots](int side, const QString &rel,
+			const QByteArray &content) {
+			const QString path = roots[side] + QLatin1Char('/') + rel;
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write(content);
+		};
+		for (int i = 0; i < 3; ++i)
+		{
+			put(i, QStringLiteral("same.txt"), "x" + QByteArray(1, '\n'));
+			put(i, QStringLiteral("diff-left.txt"), i == 0 ? "a\n" : "b\n");
+			put(i, QStringLiteral("diff-middle.txt"), i == 1 ? "a\n" : "b\n");
+			put(i, QStringLiteral("diff-right.txt"), i == 2 ? "a\n" : "b\n");
+			put(i, QStringLiteral("diff-all.txt"), QByteArray::number(i) + "\n");
+			put(i, QStringLiteral("sub/nested.txt"), i == 2 ? "n2\n" : "n\n");
+		}
+		put(0, QStringLiteral("left-only.txt"), "u\n");
+		put(1, QStringLiteral("middle-only.txt"), "u\n");
+		put(2, QStringLiteral("right-only.txt"), "u\n");
+		put(1, QStringLiteral("no-left.txt"), "m\n");
+		put(2, QStringLiteral("no-left.txt"), "m\n");
+
+		const lm::FolderCompareResult result = lm::compareFolders(
+			{ roots[0], roots[1], roots[2] }, true);
+		using Item = lm::FolderCompareItem;
+		QHash<QString, const Item *> byName;
+		for (const Item &item : result.items)
+			byName.insert(item.name, &item);
+		const auto is = [&byName](const QString &name, Item::Category cat,
+			Item::ThreeWayInfo info = Item::NoInfo) {
+			const Item *item = byName.value(name);
+			const bool ok = item != nullptr && item->category == cat
+				&& (info == Item::NoInfo || item->threeWay == info);
+			if (!ok)
+				fprintf(stderr, "unexpected: %s cat=%d 3way=%d\n",
+					qPrintable(name), item ? item->category : -1,
+					item ? item->threeWay : -1);
+			return ok;
+		};
+		bool ok = result.sides == 3 && result.items.size() == 11;
+		ok = is(QStringLiteral("same.txt"), Item::Identical) && ok;
+		ok = is(QStringLiteral("diff-left.txt"), Item::Different,
+			Item::MiddleRightIdentical) && ok;
+		ok = is(QStringLiteral("diff-middle.txt"), Item::Different,
+			Item::LeftRightIdentical) && ok;
+		ok = is(QStringLiteral("diff-right.txt"), Item::Different,
+			Item::LeftMiddleIdentical) && ok;
+		ok = is(QStringLiteral("diff-all.txt"), Item::Different) && ok;
+		ok = is(QStringLiteral("left-only.txt"), Item::LeftOnly) && ok;
+		ok = is(QStringLiteral("middle-only.txt"), Item::MiddleOnly) && ok;
+		ok = is(QStringLiteral("right-only.txt"), Item::RightOnly) && ok;
+		ok = is(QStringLiteral("no-left.txt"), Item::MissingLeft) && ok;
+		ok = is(QStringLiteral("nested.txt"), Item::Different,
+			Item::LeftMiddleIdentical) && ok;
+		ok = is(QStringLiteral("sub"), Item::Different) && ok;
+		printf("items: %lld, different: %d, unique: %d, identical: %d, ok: %d\n",
+			static_cast<long long>(result.items.size()), result.different,
+			result.unique, result.identical, ok);
+		return (ok && result.different == 7 && result.unique == 3
+			&& result.identical == 1) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestArchiveOpt))
+	{
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		// two small archives with one differing file, one identical
+		// file and one side-only file each; zip on one side, tar.gz on
+		// the other so both the format and the filter paths run
+		const QString zipPath = dir.filePath(QStringLiteral("left.zip"));
+		const QString tgzPath = dir.filePath(QStringLiteral("right.tar.gz"));
+		if (!writeTestArchive(zipPath, false,
+				{ { "a.txt", "hello\n" }, { "sub/same.txt", "same\n" },
+				  { "left-only.txt", "extra\n" } })
+			|| !writeTestArchive(tgzPath, true,
+				{ { "a.txt", "world\n" }, { "sub/same.txt", "same\n" },
+				  { "right-only.txt", "extra\n" } }))
+		{
+			fprintf(stderr, "building the fixtures failed\n");
+			return 2;
+		}
+		if (!lm::isArchivePath(zipPath) || !lm::isArchivePath(tgzPath)
+			|| lm::isArchivePath(QStringLiteral("a.txt")))
+		{
+			fprintf(stderr, "isArchivePath misdetects\n");
+			return 1;
+		}
+		const QString leftDir = dir.filePath(QStringLiteral("L"));
+		const QString rightDir = dir.filePath(QStringLiteral("R"));
+		QDir().mkpath(leftDir);
+		QDir().mkpath(rightDir);
+		QString error;
+		if (!lm::extractArchive(zipPath, leftDir, &error)
+			|| !lm::extractArchive(tgzPath, rightDir, &error))
+		{
+			fprintf(stderr, "extract failed: %s\n", qPrintable(error));
+			return 1;
+		}
+		const lm::FolderCompareResult result =
+			lm::compareFolders(leftDir, rightDir, true);
+		printf("different: %d, identical: %d, unique: %d\n",
+			result.different, result.identical, result.unique);
+		return (result.different == 1 && result.identical == 2
+			&& result.unique == 2) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestOpenEnterOpt))
+	{
+		// the crash below came from closing the screen on Compare
+		QSettings().setValue(QStringLiteral("General/CloseSelectorOnCompare"), true);
+		// regression: Enter in a path field triggers Compare, whose
+		// handler used to delete the selector page while its line
+		// edit's key handling was still on the stack (crashed)
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString leftPath = dir.filePath(QStringLiteral("left.txt"));
+		const QString rightPath = dir.filePath(QStringLiteral("right.txt"));
+		{
+			QFile f(leftPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("a\nb\n");
+		}
+		{
+			QFile f(rightPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("a\nc\n");
+		}
+		MainWindow window;
+		window.openSelector({ leftPath, rightPath });
+		auto *selector = window.findChild<NewComparisonView *>();
+		auto *pathEdit = selector != nullptr
+			? selector->findChild<QLineEdit *>() : nullptr;
+		if (pathEdit == nullptr)
+			return 2;
+		QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+		QCoreApplication::sendEvent(pathEdit, &press);
+		QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+		QCoreApplication::sendEvent(pathEdit, &release);
+		QCoreApplication::processEvents();
+		QCoreApplication::processEvents();
+		const bool selectorClosed =
+			window.findChild<NewComparisonView *>() == nullptr;
+		// exactly one: a single Enter used to reach compare() twice when
+		// the window-wide shortcut did not take the key first
+		const qsizetype comparisons = window.findChildren<FileCompareView *>().size();
+		printf("selector closed: %d, comparisons open: %lld\n",
+			selectorClosed, static_cast<long long>(comparisons));
+		return (selectorClosed && comparisons == 1) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestLocationPaneOpt))
+	{
+		// WinMerge's location pane (CLocationView): its bars, the line under
+		// the pointer, the press, the drag, the double click, the wheel, its
+		// menu, and the Go To dialog (WMGotoDlg) the menu and Edit open
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		// 400 lines, every 60th different on the right
+		QByteArray leftText, rightText, shortText;
+		for (int i = 1; i <= 400; ++i)
+		{
+			const QByteArray line = "line " + QByteArray::number(i) + " of the text\n";
+			leftText += line;
+			rightText += i % 60 == 0 ? "line " + QByteArray::number(i) + " CHANGED\n" : line;
+			if (i <= 20)
+				shortText += line;
+		}
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		const QString same = dir.filePath(QStringLiteral("same.txt"));
+		const QString shortFile = dir.filePath(QStringLiteral("short.txt"));
+		write(left, leftText);
+		write(right, rightText);
+		write(same, leftText);
+		write(shortFile, shortText);
+
+		FileCompareView view;
+		QString error;
+		if (!view.compare(QStringList{ left, right }, &error))
+		{
+			printf("compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		view.resize(1000, 640);
+		view.show();
+		settle();
+		DiffTextEdit *const panes[2] = { view.paneForTest(0), view.paneForTest(1) };
+		LocationPane *const map = view.locationPaneForTest();
+		const int lines = panes[0]->document()->blockCount();
+		// upstream's scale: a line at most 4 pixels, 5 pixels above and below
+		const double lineInPix = qMin(4.0, (map->height() - 10.0) / lines);
+		// a height on the line (the pixel a line starts on can read as the
+		// line before, in upstream's arithmetic as in this)
+		const auto yOf = [&](int line) {
+			int y = static_cast<int>(5 + (line + 0.5) * lineInPix);
+			while (map->lineAt(y) < line)
+				++y;
+			while (y > 0 && map->lineAt(y) > line)
+				--y;
+			return y;
+		};
+		const QRect bars[2] = { map->barForTest(0), map->barForTest(1) };
+		const auto xOf = [&](int side) { return bars[side].center().x(); };
+		const auto mouse = [&](QEvent::Type type, int side, int line,
+			Qt::MouseButtons held, Qt::KeyboardModifiers modifiers = Qt::NoModifier)
+		{
+			const QPointF at(side < 0 ? 2 : xOf(side), yOf(line));
+			QMouseEvent event(type, at, map->mapToGlobal(at),
+				type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, held, modifiers);
+			QApplication::sendEvent(map, &event);
+		};
+		const auto click = [&](int side, int line, Qt::KeyboardModifiers modifiers = Qt::NoModifier)
+		{
+			mouse(QEvent::MouseButtonPress, side, line, Qt::LeftButton, modifiers);
+			mouse(QEvent::MouseButtonRelease, side, line, Qt::NoButton, modifiers);
+			settle();
+		};
+		const auto cursorLine = [&](int side) { return panes[side]->textCursor().blockNumber(); };
+		const auto centeredOn = [&](int line) {
+			const int top = qMax(0, line - panes[0]->visibleLineCount() / 2);
+			return panes[0]->firstVisibleLine() == top && panes[1]->firstVisibleLine() == top
+				&& map->viewFirstForTest() == top;
+		};
+		const auto toTop = [&]()
+		{
+			for (DiffTextEdit *pane : panes)
+			{
+				pane->setTextCursor(QTextCursor(pane->document()->firstBlock()));
+				pane->verticalScrollBar()->setValue(0);
+			}
+			settle();
+		};
+		const auto say = [&](const char *when)
+		{
+			printf("  %s: panes at %d and %d, marker at %d, cursors on %d and %d, %d lines show\n",
+				when, panes[0]->firstVisibleLine(), panes[1]->firstVisibleLine(),
+				map->viewFirstForTest(), cursorLine(0), cursorLine(1), panes[0]->visibleLineCount());
+		};
+
+		// --- the bars (CalculateBars) ---
+		{
+			const int bottom = static_cast<int>(lineInPix * lines + 6);
+			check(map->width() == 40 && bars[0].left() == 6 && bars[0].width() == 10
+				&& bars[1].left() == 22 && bars[1].width() == 10 && bars[0].top() == 4
+				&& bars[0].bottom() + 1 == bottom,
+				"a bar per file, as wide as the room around it, a line at most 4 pixels");
+			// (the middle of line 300, by the scale alone: a line is more
+			// than a pixel high here)
+			const int middle = static_cast<int>(std::lround(5 + 300.5 * lineInPix));
+			check(lineInPix > 1 && map->lineAt(middle) == 300,
+				"the line under the pointer is the one meant (upstream takes the one above)");
+		}
+
+		// --- a press: the panes to the line, the cursor too ---
+		toTop();
+		click(1, 300);
+		check(cursorLine(1) == 300 && cursorLine(0) == 300 && view.activePaneForTest() == 1
+			&& !panes[1]->textCursor().hasSelection() && centeredOn(300),
+			"a press on a bar: that file's pane takes the cursor, on the line, in the middle");
+
+		// --- Shift keeps the anchor of the file's own pane ---
+		toTop();
+		view.setCursorViewLineForTest(0, 10);
+		click(0, 200, Qt::ShiftModifier);
+		{
+			const QTextCursor own = panes[0]->textCursor();
+			const QTextCursor other = panes[1]->textCursor();
+			check(panes[0]->document()->findBlock(own.anchor()).blockNumber() == 10
+				&& own.block().blockNumber() == 200 && !other.hasSelection()
+				&& other.block().blockNumber() == 200,
+				"Shift and a press: the selection grows to the line in that file's pane");
+		}
+
+		// --- a drag keeps the panes on the line under the pointer ---
+		toTop();
+		mouse(QEvent::MouseButtonPress, 0, 100, Qt::LeftButton);
+		mouse(QEvent::MouseMove, 0, 220, Qt::LeftButton);
+		mouse(QEvent::MouseMove, 0, 350, Qt::LeftButton);
+		mouse(QEvent::MouseButtonRelease, 0, 350, Qt::NoButton);
+		settle();
+		say("after the drag");
+		{
+			const bool dragged = centeredOn(350) && cursorLine(0) == 100;
+			mouse(QEvent::MouseMove, 0, 30, Qt::NoButton);
+			settle();
+			check(dragged && centeredOn(350),
+				"a drag: the panes follow the pointer, the cursor stays where the press put it");
+		}
+
+		// --- Move Cursor on Click off: the press only scrolls ---
+		LocationPane::setMoveCursorOnClick(false);
+		toTop();
+		view.setCursorViewLineForTest(0, 5);
+		click(0, 250);
+		check(cursorLine(0) == 5 && centeredOn(250),
+			"Move Cursor on Click off: a press scrolls, the cursor stays");
+
+		// --- a double click puts the cursor there all the same, no drag after ---
+		toTop();
+		mouse(QEvent::MouseButtonPress, 1, 120, Qt::LeftButton);
+		mouse(QEvent::MouseButtonRelease, 1, 120, Qt::NoButton);
+		mouse(QEvent::MouseButtonDblClick, 1, 120, Qt::LeftButton);
+		settle();
+		say("after the double click");
+		{
+			const bool there = cursorLine(1) == 120 && view.activePaneForTest() == 1;
+			mouse(QEvent::MouseMove, 1, 380, Qt::LeftButton);
+			mouse(QEvent::MouseButtonRelease, 1, 380, Qt::NoButton);
+			settle();
+			check(there && centeredOn(120),
+				"a double click: the cursor goes there whatever the option, and nothing drags");
+		}
+		LocationPane::setMoveCursorOnClick(true);
+
+		// --- the wheel scrolls the active pane ---
+		toTop();
+		view.setCursorViewLineForTest(1, 0);
+		{
+			const QPointF at(xOf(0), yOf(10));
+			QWheelEvent wheel(at, map->mapToGlobal(at), QPoint(), QPoint(0, -360),
+				Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+			QApplication::sendEvent(map, &wheel);
+			settle();
+			check(panes[1]->firstVisibleLine() > 0
+				&& panes[0]->firstVisibleLine() == panes[1]->firstVisibleLine(),
+				"the wheel over the pane scrolls the active pane, the other follows");
+		}
+
+		// --- the menu (IDR_POPUP_LOCATIONBAR) ---
+		QStringList offered;
+		std::function<QAction *(QMenu *)> pick;
+		LocationPane::setMenuPresenterForTest([&](QMenu *menu) -> QAction * {
+			offered.clear();
+			for (QAction *action : menu->actions())
+				offered.append(action->isSeparator() ? QStringLiteral("-")
+					: QStringLiteral("%1|%2|%3|%4").arg(action->objectName(),
+						action->isEnabled() ? QStringLiteral("on") : QStringLiteral("off"),
+						action->isCheckable() ? (action->isChecked() ? QStringLiteral("checked")
+							: QStringLiteral("unchecked")) : QString(),
+						action->shortcut().toString()));
+			return pick ? pick(menu) : nullptr;
+		});
+		const auto named = [](QMenu *menu, const char *name) -> QAction * {
+			for (QAction *action : menu->actions())
+				if (action->objectName() == QLatin1String(name))
+					return action;
+			return nullptr;
+		};
+		QString gotoLineText;
+		const auto menuAt = [&](FileCompareView &target, QPoint point,
+			QContextMenuEvent::Reason reason = QContextMenuEvent::Mouse)
+		{
+			LocationPane *pane = target.locationPaneForTest();
+			QContextMenuEvent event(reason, point, pane->mapToGlobal(point));
+			QApplication::sendEvent(pane, &event);
+			settle();
+		};
+		toTop();
+		pick = [&](QMenu *menu) {
+			QAction *action = named(menu, "locationGotoLine");
+			gotoLineText = action != nullptr ? action->text() : QString();
+			return action;
+		};
+		menuAt(view, QPoint(xOf(1), yOf(150)));
+		say("after Go to Line");
+		printf("  Go to Line text: %s\n", qPrintable(gotoLineText));
+		check(offered == QStringList{
+				QStringLiteral("locationGotoLine|on||"),
+				QStringLiteral("locationGoto|on||") + FileCompareView::goToShortcut().toString(),
+				QStringLiteral("locationGotoDefinition|off||F12"), QStringLiteral("-"),
+				QStringLiteral("locationMoveCursor|on|checked|"), QStringLiteral("-"),
+				QStringLiteral("locationNoMovedBlocks|on|checked|"),
+				QStringLiteral("locationAllMovedBlocks|on|unchecked|") },
+			"the menu: Go to Line, Go to, Go to Definition, Move Cursor on Click, moved blocks");
+		for (const QString &item : offered)
+			printf("  %s\n", qPrintable(item));
+		check(gotoLineText == FileCompareView::tr("G&o to Line %1").arg(151)
+				&& cursorLine(1) == 150 && view.activePaneForTest() == 1 && centeredOn(150),
+			"Go to Line: the line under the pointer, of the bar's file, which takes the cursor");
+
+		// off the bars' height the item is grey and has no number; from the
+		// keyboard the menu is for the corner
+		{
+			FileCompareView shortView;
+			if (!shortView.compare(QStringList{ shortFile, shortFile }, &error))
+				return 2;
+			shortView.resize(1000, 640);
+			shortView.show();
+			settle();
+			pick = nullptr;
+			menuAt(shortView, QPoint(20, 400));
+			const QString below = offered.value(0);
+			menuAt(shortView, QPoint(), QContextMenuEvent::Keyboard);
+			const QString corner = offered.value(0);
+			pick = [&](QMenu *menu) {
+				QAction *action = named(menu, "locationGotoLine");
+				gotoLineText = action != nullptr ? action->text() : QString();
+				return nullptr;
+			};
+			menuAt(shortView, QPoint(), QContextMenuEvent::Keyboard);
+			check(below == QStringLiteral("locationGotoLine|off||")
+					&& corner == QStringLiteral("locationGotoLine|on||")
+					&& gotoLineText == FileCompareView::tr("G&o to Line %1").arg(1),
+				"below the bars Go to Line is grey; from the keyboard it is for the first line");
+		}
+
+		// Move Cursor on Click, from the menu, kept
+		pick = [&](QMenu *menu) { return named(menu, "locationMoveCursor"); };
+		menuAt(view, QPoint(xOf(0), yOf(20)));
+		const bool off = !LocationPane::moveCursorOnClick();
+		menuAt(view, QPoint(xOf(0), yOf(20)));
+		check(off && LocationPane::moveCursorOnClick()
+				&& QSettings().value(QStringLiteral("Settings/LocBarMoveCursorOnClick")).toBool(),
+			"Move Cursor on Click: the item switches the option, kept in the settings");
+
+		// --- Go to... (WMGotoDlg), from the menu: the first file's line ---
+		QStringList dialogSeen;
+		std::function<bool(GoToDialog *)> answer;
+		GoToDialog::setPresenterForTest([&](GoToDialog *dialog) {
+			dialogSeen = QStringList{ dialog->numberFieldForTest()->text(),
+				QString::number(dialog->file()),
+				dialog->fileButtonForTest(1)->isEnabled() ? QStringLiteral("middle")
+					: QStringLiteral("no middle"),
+				dialog->goesToLine() ? QStringLiteral("line") : QStringLiteral("difference"),
+				dialog->differenceButtonForTest()->isEnabled() ? QStringLiteral("differences")
+					: QStringLiteral("no differences"),
+				dialog->rangeLabelForTest()->text(),
+				dialog->goButtonForTest()->isEnabled() ? QStringLiteral("go") : QStringLiteral("no go") };
+			return answer ? answer(dialog) : false;
+		});
+		toTop();
+		view.setCursorViewLineForTest(0, 33);
+		answer = [](GoToDialog *dialog) {
+			dialog->numberFieldForTest()->setText(QStringLiteral("77"));
+			return true;
+		};
+		pick = [&](QMenu *menu) { return named(menu, "locationGoto"); };
+		menuAt(view, QPoint(xOf(1), yOf(20)));
+		check(dialogSeen == QStringList{ QStringLiteral("34"), QStringLiteral("0"),
+				QStringLiteral("no middle"), QStringLiteral("line"), QStringLiteral("differences"),
+				QStringLiteral("(1-400)"), QStringLiteral("go") }
+				&& cursorLine(0) == 76 && view.activePaneForTest() == 0 && centeredOn(76),
+			"Go to... from the menu: the first file's line, the line typed gone to");
+		printf("  dialog: %s\n", qPrintable(dialogSeen.join(QStringLiteral(" | "))));
+
+		// --- Go to from the right pane: a difference by its number ---
+		toTop();
+		view.setCursorViewLineForTest(1, 41);
+		{
+			QStringList rules;
+			answer = [&](GoToDialog *dialog) {
+				dialog->differenceButtonForTest()->click();
+				rules.append(dialog->rangeLabelForTest()->text());
+				for (const char *typed : { "0", "7", "2" })
+				{
+					dialog->numberFieldForTest()->setText(QLatin1String(typed));
+					rules.append(dialog->goButtonForTest()->isEnabled() ? QStringLiteral("go")
+						: QStringLiteral("no go"));
+				}
+				dialog->lineButtonForTest()->click();
+				rules.append(dialog->rangeLabelForTest()->text());
+				dialog->differenceButtonForTest()->click();
+				return true;
+			};
+			view.showGoTo();
+			check(dialogSeen.value(0) == QStringLiteral("42") && dialogSeen.value(1) == QStringLiteral("2")
+					&& rules == QStringList{ QStringLiteral("(1-6)"), QStringLiteral("no go"),
+						QStringLiteral("no go"), QStringLiteral("go"), QStringLiteral("(1-400)") }
+					&& view.currentDiffForTest() == 1,
+				"Go to from the right pane: its line, the range of what is chosen, the difference");
+			printf("  rules: %s\n", qPrintable(rules.join(QStringLiteral(" | "))));
+		}
+
+		// no differences to go to between identical files; a middle file in 3-way
+		{
+			FileCompareView identical;
+			if (!identical.compare(QStringList{ left, same }, &error))
+				return 2;
+			answer = nullptr;
+			identical.showGoTo(0);
+			const QString noDifferences = dialogSeen.value(4);
+			FileCompareView three;
+			if (!three.compare(QStringList{ left, same, right }, &error))
+				return 2;
+			three.showGoTo(1);
+			check(noDifferences == QStringLiteral("no differences")
+					&& dialogSeen.value(2) == QStringLiteral("middle")
+					&& dialogSeen.value(1) == QStringLiteral("1"),
+				"Go to: no differences between identical files, the middle file in 3-way");
+		}
+
+		// --- moved blocks from the menu: looked for, and drawn joined ---
+		{
+			const QString movedLeft = dir.filePath(QStringLiteral("movedLeft.txt"));
+			const QString movedRight = dir.filePath(QStringLiteral("movedRight.txt"));
+			write(movedLeft, "one\ntwo\nthree\nfour\nfive\nsix\n\nmoved block line 1\n"
+				"moved block line 2\nmoved block line 3\nseven\n");
+			write(movedRight, "moved block line 1\nmoved block line 2\nmoved block line 3\none\ntwo\n"
+				"three\nfour\nfive\nsix\nseven\n");
+			lm::setCompareFlagForTest(OPT_CMP_IGNORE_BLANKLINES, true);
+			FileCompareView moved;
+			if (!moved.compare(QStringList{ movedLeft, movedRight }, &error))
+				return 2;
+			moved.resize(1000, 640);
+			moved.show();
+			settle();
+			pick = [&](QMenu *menu) { return named(menu, "locationAllMovedBlocks"); };
+			menuAt(moved, QPoint(20, 20));
+			settle();
+			const std::vector<LocationPane::Ribbon> ribbons = moved.locationPaneForTest()->ribbonsForTest();
+			bool trivialDrawn = false;
+			for (const LocationPane::Band &band : moved.locationPaneForTest()->bandsForTest())
+				trivialDrawn = trivialDrawn || band.color == lm::diffColors().trivial
+					|| band.color == lm::diffColors().trivialDeleted;
+			const DiffTextEdit *movedLeftPane = moved.paneForTest(0);
+			const DiffTextEdit *movedRightPane = moved.paneForTest(1);
+			const auto viewOf = [](const DiffTextEdit *pane, const char *text) {
+				for (QTextBlock b = pane->document()->begin(); b.isValid(); b = b.next())
+					if (b.text() == QLatin1String(text))
+						return b.blockNumber();
+				return -1;
+			};
+			const bool joined = ribbons.size() == 1 && ribbons[0].side == 0 && ribbons[0].lines == 3
+				&& ribbons[0].firstLine == viewOf(movedLeftPane, "moved block line 1")
+				&& ribbons[0].otherFirstLine == viewOf(movedRightPane, "moved block line 1");
+			const bool saved = GetOptionsMgr()->GetBool(OPT_CMP_MOVED_BLOCKS);
+			const QString shots = qEnvironmentVariable("MERGEDESK_SELFTEST_SHOTS");
+			if (!shots.isEmpty())
+			{
+				// the bars, the moved block joined, and the menu
+				const QString language = qEnvironmentVariable("MERGEDESK_LANGUAGE",
+					QStringLiteral("en"));
+				moved.grab().save(QStringLiteral("%1/location-%2-moved.png").arg(shots, language));
+				pick = [&](QMenu *menu) {
+					menu->ensurePolished();
+					menu->adjustSize();
+					menu->grab().save(QStringLiteral("%1/location-%2-menu.png").arg(shots, language));
+					return nullptr;
+				};
+				menuAt(moved, QPoint(20, 20));
+				GoToDialog::setPresenterForTest([&](GoToDialog *dialog) {
+					dialog->adjustSize();
+					dialog->grab().save(QStringLiteral("%1/location-%2-goto.png").arg(shots, language));
+					return false;
+				});
+				moved.showGoTo(0);
+				GoToDialog::setPresenterForTest({});
+			}
+			pick = [&](QMenu *menu) { return named(menu, "locationNoMovedBlocks"); };
+			menuAt(moved, QPoint(20, 20));
+			settle();
+			check(joined && saved && !trivialDrawn
+					&& moved.locationPaneForTest()->ribbonsForTest().empty()
+					&& !GetOptionsMgr()->GetBool(OPT_CMP_MOVED_BLOCKS),
+				"All Moved Blocks: the moved block joined to where it went; No Moved Blocks: gone");
+			printf("  ribbons: %d, first on %d to %d for %d lines\n", static_cast<int>(ribbons.size()),
+				ribbons.empty() ? -1 : ribbons[0].firstLine, ribbons.empty() ? -1 : ribbons[0].otherFirstLine,
+				ribbons.empty() ? -1 : ribbons[0].lines);
+			lm::setCompareFlagForTest(OPT_CMP_IGNORE_BLANKLINES, false);
+		}
+		LocationPane::setMenuPresenterForTest({});
+		GoToDialog::setPresenterForTest({});
+
+		// --- Edit > Go to... with its shortcut, not shared with Find Next ---
+		{
+			MainWindow window;
+			auto *gotoAction = window.findChild<QAction *>(QStringLiteral("editGoto"));
+			auto *findNext = window.findChild<QAction *>(QStringLiteral("editFindNext"));
+			check(gotoAction != nullptr && findNext != nullptr
+					&& gotoAction->shortcut() == FileCompareView::goToShortcut()
+					&& !findNext->shortcuts().contains(FileCompareView::goToShortcut())
+					&& !findNext->shortcuts().isEmpty(),
+				"Edit > Go to... has its shortcut, which Find Next does not take");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFindReplaceOpt))
+	{
+		// WinMerge's Find and Replace dialogs (CFindTextDlg, CEditReplaceDlg),
+		// F3 and its variants, and the marker of the text searched for
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		const QString shots = qEnvironmentVariable("MERGEDESK_SELFTEST_SHOTS");
+		const QString language = qEnvironmentVariable("MERGEDESK_LANGUAGE", QStringLiteral("en"));
+		const auto shoot = [&shots, &language](QWidget *widget, const char *name)
+		{
+			if (!shots.isEmpty())
+				widget->grab().save(QStringLiteral("%1/fr-%2-%3.png").arg(shots, language,
+					QLatin1String(name)));
+		};
+		// a text typed in a field, as the keyboard would
+		const auto typeInto = [](QComboBox *field, const QString &text)
+		{
+			field->lineEdit()->setText(text);
+			emit field->lineEdit()->textEdited(text);
+		};
+		QStringList told;
+		lm::setMessageSinkForTest([&told](const QString &text) { told.append(text); });
+		const auto notFound = [](const QString &text) {
+			return PaneSearch::tr("Cannot find string \"%1\".").arg(text);
+		};
+		const auto numReplaced = [](int count) {
+			return QCoreApplication::translate("MessageBoxes", "Replaced %1 string(s).").arg(count);
+		};
+		// where a pane's selection starts (column, line), and what it holds
+		const auto startOf = [](DiffTextEdit *pane) {
+			QTextCursor start(pane->document());
+			start.setPosition(pane->textCursor().selectionStart());
+			return QPoint(start.positionInBlock(), start.blockNumber());
+		};
+		const auto put = [](FileCompareView &view, int side, int line, int column) {
+			view.setCursorViewLineForTest(side, line);
+			DiffTextEdit *pane = view.paneForTest(side);
+			QTextCursor cursor = pane->textCursor();
+			cursor.setPosition(cursor.block().position() + column);
+			pane->setTextCursor(cursor);
+		};
+
+		const QByteArray leftText =
+			"alpha beta gamma\n"
+			"foobar foo barfoo\n"
+			"Here is here and there\n"
+			"one two three\n"
+			"CamelCase camelcase CAMELCASE\n"
+			"x1 x2 x3\n"
+			"last line\n";
+		QByteArray rightText = leftText;
+		rightText.replace("one two three", "one 2 three");
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		write(left, leftText);
+		write(right, rightText);
+		FileCompareView view;
+		QString error;
+		if (!view.compare(QStringList{ left, right }, &error))
+		{
+			printf("compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		view.resize(1000, 600);
+		view.show();
+		settle();
+		DiffTextEdit *pane = view.paneForTest(0);
+		PaneSearch *search = view.paneSearchForTest(0);
+		const auto at = [&]() { return startOf(pane); };
+		const auto selected = [&]() { return pane->textCursor().selectedText(); };
+
+		// --- the Find dialog ---
+		put(view, 0, 0, 7); // in "beta"
+		search->editFind();
+		FindTextDialog *find = search->findDialog();
+		if (find == nullptr)
+			return 1;
+		settle();
+		shoot(find, "find");
+		check(find->isVisible() && find->windowTitle() == FindTextDialog::tr("Find")
+				&& find->findTextForTest()->currentText() == QStringLiteral("beta")
+				&& find->noCloseForTest()->isChecked() && !find->matchCaseForTest()->isChecked()
+				&& !find->wholeWordForTest()->isChecked() && !find->regExpForTest()->isChecked()
+				&& !find->noWrapForTest()->isChecked() && find->findNextForTest()->isDefault(),
+			"Find: the word at the cursor, \"Don't close this dialog\" ticked, Find Next the default");
+		typeInto(find->findTextForTest(), QString());
+		const bool emptyOff = !find->findNextForTest()->isEnabled()
+			&& !find->findPrevForTest()->isEnabled();
+		typeInto(find->findTextForTest(), QStringLiteral("foo"));
+		check(emptyOff && find->findNextForTest()->isEnabled() && find->findPrevForTest()->isEnabled(),
+			"Find: Find Next and Find Prev need a text");
+
+		QList<QPoint> places;
+		for (int i = 0; i < 4; ++i)
+		{
+			find->findNextForTest()->click();
+			places.append(at());
+		}
+		check(places == QList<QPoint>{ QPoint(0, 1), QPoint(7, 1), QPoint(14, 1), QPoint(0, 1) }
+				&& selected() == QStringLiteral("foo") && find->isVisible() && told.isEmpty(),
+			"Find Next: on from the cursor and round the end of the file, the dialog left open");
+		find->findPrevForTest()->click();
+		check(at() == QPoint(14, 1) && selected() == QStringLiteral("foo")
+				&& pane->textCursor().position() == pane->textCursor().selectionStart(),
+			"Find Prev: the one before, round the start, the cursor on its left");
+
+		put(view, 0, 0, 0);
+		find->wholeWordForTest()->click();
+		find->findNextForTest()->click();
+		const QPoint wholeWord = at();
+		find->findNextForTest()->click();
+		check(wholeWord == QPoint(7, 1) && at() == QPoint(7, 1),
+			"Match whole word only: \"foo\" on its own, not in \"foobar\" or \"barfoo\"");
+		find->wholeWordForTest()->click();
+
+		put(view, 0, 4, 0);
+		typeInto(find->findTextForTest(), QStringLiteral("camelcase"));
+		find->matchCaseForTest()->click();
+		find->findNextForTest()->click();
+		check(at() == QPoint(10, 4) && selected() == QStringLiteral("camelcase"),
+			"Match case: the text as typed only");
+		find->matchCaseForTest()->click();
+
+		find->regExpForTest()->click();
+		const bool noWholeWord = !find->wholeWordForTest()->isEnabled()
+			&& !find->wholeWordForTest()->isChecked();
+		put(view, 0, 5, 0);
+		typeInto(find->findTextForTest(), QStringLiteral("x[23]"));
+		find->findNextForTest()->click();
+		const bool expression = selected() == QStringLiteral("x2") && at() == QPoint(3, 5);
+		put(view, 0, 0, 0);
+		typeInto(find->findTextForTest(), QStringLiteral("three\\nCamel"));
+		find->findNextForTest()->click();
+		check(noWholeWord && expression && at() == QPoint(8, 3)
+				&& selected() == QStringLiteral("three") + QChar(QChar::ParagraphSeparator)
+					+ QStringLiteral("Camel"),
+			"Regular expression: no whole word with it, and a line break in it takes the next line in");
+		find->regExpForTest()->click();
+
+		const QPoint before = at();
+		typeInto(find->findTextForTest(), QStringLiteral("zzz"));
+		find->findNextForTest()->click();
+		check(told == QStringList{ notFound(QStringLiteral("zzz")) } && at() == before
+				&& find->isVisible(),
+			"not found: told so, the selection left where it was");
+		told.clear();
+
+		find->noWrapForTest()->click();
+		put(view, 0, 6, 0);
+		typeInto(find->findTextForTest(), QStringLiteral("alpha"));
+		find->findNextForTest()->click();
+		const bool stopped = told == QStringList{ notFound(QStringLiteral("alpha")) };
+		told.clear();
+		find->noWrapForTest()->click();
+		find->findNextForTest()->click();
+		check(stopped && told.isEmpty() && at() == QPoint(0, 0),
+			"\"Don't wrap end of file\": the search stops at the end of the file");
+
+		find->noCloseForTest()->click();
+		find->findNextForTest()->click();
+		check(!find->isVisible() && told.isEmpty(),
+			"\"Don't close this dialog\" off: what is found closes it");
+		const unsigned savedFlags = QSettings().value(QStringLiteral("Editor/FindFlags")).toUInt();
+		const QStringList history = QSettings().value(QStringLiteral("Editor/FindText")).toStringList();
+		printf("  history: %s\n", qPrintable(history.join(QStringLiteral(" | "))));
+		check(savedFlags == 0 && history.value(0) == QStringLiteral("alpha")
+				&& history.contains(QStringLiteral("zzz"))
+				&& history.indexOf(QStringLiteral("foo")) > history.indexOf(QStringLiteral("camelcase")),
+			"the settings: the flags of the last search that found, the texts newest first");
+
+		search->editFind();
+		const bool reopened = find->isVisible()
+			&& find->findTextForTest()->currentText() == QStringLiteral("alpha")
+			&& !find->noCloseForTest()->isChecked();
+		typeInto(find->findTextForTest(), QStringLiteral("ALPHA"));
+		find->findNextForTest()->click();
+		const QStringList again = QSettings().value(QStringLiteral("Editor/FindText")).toStringList();
+		check(reopened && again.value(0) == QStringLiteral("ALPHA")
+				&& !again.contains(QStringLiteral("alpha"))
+				&& find->findTextForTest()->count() == again.size(),
+			"the history: one text the same but for case, the newest");
+
+		// --- F3 (OnEditRepeat) ---
+		put(view, 0, 1, 0);
+		search->editFind();
+		find->noCloseForTest()->click();
+		typeInto(find->findTextForTest(), QStringLiteral("foo"));
+		find->findNextForTest()->click();
+		find->reject();
+		view.findRepeat(false, false);
+		const QPoint next = at();
+		view.findRepeat(false, true);
+		check(next == QPoint(7, 1) && at() == QPoint(0, 1),
+			"F3 and Shift+F3: the last search again, either way");
+		put(view, 0, 2, 9); // in the second "here"
+		view.findRepeat(true, false);
+		check(selected() == QStringLiteral("here") && at() == QPoint(18, 2),
+			"Ctrl+F3: the word at the cursor, searched for from there");
+		view.setCursorViewLineForTest(1, 0);
+		view.findRepeat(false, false);
+		FindTextDialog *rightFind = view.paneSearchForTest(1)->findDialog();
+		check(rightFind != nullptr && rightFind != find && rightFind->isVisible(),
+			"F3 where nothing was searched for yet: that pane's own Find dialog");
+		if (rightFind != nullptr)
+			rightFind->reject();
+
+		// --- the marker: the text last searched for, in every pane ---
+		settle();
+		const QStringList markedLeft = pane->markedTextsForTest();
+		const QStringList markedRight = view.paneForTest(1)->markedTextsForTest();
+		lm::TextMarkers::instance()->deleteMarker(lm::TextMarkers::searchKey());
+		settle();
+		printf("  marked: %s\n", qPrintable(markedLeft.join(QStringLiteral(" | "))));
+		check(markedLeft == QStringList{ QStringLiteral("Here"), QStringLiteral("here"),
+					QStringLiteral("here") }
+				&& markedRight == markedLeft && pane->markedTextsForTest().isEmpty(),
+			"the marker: every occurrence of the text searched for, in both panes");
+
+		// --- the Replace dialog ---
+		{
+			FileCompareView readOnly;
+			readOnly.setReadOnlySides({ false, true });
+			if (!readOnly.compare(QStringList{ left, right }, &error))
+				return 2;
+			readOnly.setCursorViewLineForTest(1, 0);
+			readOnly.showReplace();
+			check(!readOnly.activePaneEditable()
+					&& readOnly.paneSearchForTest(1)->replaceDialog() == nullptr,
+				"Replace: none for a read-only pane");
+		}
+		const QString editLeft = dir.filePath(QStringLiteral("edit-left.txt"));
+		const QString editRight = dir.filePath(QStringLiteral("edit-right.txt"));
+		write(editLeft, "Here is here and there\nx1 x2 x3\nx4 x5\nmail ana@site bob@host\nend x\n");
+		write(editRight, "Here is here and there\nx1 x2 x3\nx4 x5\nmail ana@site bob@host\nEND\n");
+		FileCompareView edit;
+		if (!edit.compare(QStringList{ editLeft, editRight }, &error))
+			return 2;
+		edit.resize(1000, 600);
+		edit.show();
+		settle();
+		DiffTextEdit *editPane = edit.paneForTest(0);
+		PaneSearch *editSearch = edit.paneSearchForTest(0);
+		const auto line = [&](int number) {
+			return editPane->document()->findBlockByNumber(number).text();
+		};
+		const auto editAt = [&]() { return startOf(editPane); };
+
+		put(edit, 0, 0, 1); // in "Here"
+		editSearch->editReplace();
+		EditReplaceDialog *replace = editSearch->replaceDialog();
+		if (replace == nullptr)
+			return 1;
+		settle();
+		shoot(replace, "replace");
+		check(replace->isVisible() && replace->windowTitle() == EditReplaceDialog::tr("Replace")
+				&& replace->findTextForTest()->currentText() == QStringLiteral("Here")
+				&& replace->replaceTextForTest()->currentText().isEmpty()
+				&& replace->wholeFileScopeForTest()->isChecked()
+				&& !replace->selectionScopeForTest()->isEnabled()
+				&& replace->findNextForTest()->isDefault() && replace->replaceForTest()->isEnabled(),
+			"Replace: the word at the cursor, the whole file without a selection, Find Next the default");
+
+		typeInto(replace->findTextForTest(), QStringLiteral("here"));
+		typeInto(replace->replaceTextForTest(), QStringLiteral("THERE"));
+		replace->replaceForTest()->click();
+		const bool firstFound = editPane->textCursor().selectedText() == QStringLiteral("here")
+			&& editAt() == QPoint(8, 0) && replace->replaceForTest()->isDefault();
+		replace->replaceForTest()->click();
+		check(firstFound && line(0) == QStringLiteral("Here is THERE and there")
+				&& editPane->textCursor().selectedText() == QStringLiteral("here")
+				&& editAt() == QPoint(19, 0),
+			"Replace: the first press finds, the next puts the text in and finds the next one");
+		{
+			QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(replace->findTextForTest()->lineEdit(), &press);
+			QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(replace->findTextForTest()->lineEdit(), &release);
+		}
+		check(line(0) == QStringLiteral("Here is THERE and tTHERE") && editAt() == QPoint(0, 0),
+			"Enter: the default button, Replace once something is found");
+		replace->reject();
+
+		put(edit, 0, 2, 0);
+		editSearch->editReplace();
+		replace = editSearch->replaceDialog();
+		typeInto(replace->findTextForTest(), QStringLiteral("x"));
+		typeInto(replace->replaceTextForTest(), QStringLiteral("xx"));
+		told.clear();
+		replace->replaceAllForTest()->click();
+		check(line(1) == QStringLiteral("xx1 xx2 xx3") && line(2) == QStringLiteral("xx4 xx5")
+				&& line(4) == QStringLiteral("end xx")
+				&& told == QStringList{ numReplaced(6) },
+			"Replace All: from the cursor, round the file, each one once though the new text has it, and the count told");
+		edit.undoActive();
+		check(line(1) == QStringLiteral("x1 x2 x3") && line(2) == QStringLiteral("x4 x5")
+				&& line(4) == QStringLiteral("end x"),
+			"Replace All: one undo step");
+
+		replace->regExpForTest()->click();
+		typeInto(replace->findTextForTest(), QStringLiteral("(\\w+)@(\\w+)"));
+		typeInto(replace->replaceTextForTest(), QStringLiteral("\\2 at \\U\\1"));
+		told.clear();
+		replace->replaceAllForTest()->click();
+		check(line(3) == QStringLiteral("mail site at ANA host at BOB")
+				&& told == QStringList{ numReplaced(2) }
+				&& !replace->wholeWordForTest()->isEnabled(),
+			"regular expression: its groups and \\U in the new text");
+		replace->reject();
+
+		// lines 1 and 2 selected: where to replace
+		{
+			QTextCursor lines(editPane->document());
+			lines.setPosition(editPane->document()->findBlockByNumber(1).position());
+			const QTextBlock second = editPane->document()->findBlockByNumber(2);
+			lines.setPosition(second.position() + second.length() - 1, QTextCursor::KeepAnchor);
+			editPane->setTextCursor(lines);
+		}
+		editSearch->editReplace();
+		replace = editSearch->replaceDialog();
+		const bool scoped = replace->selectionScopeForTest()->isChecked()
+			&& replace->selectionScopeForTest()->isEnabled()
+			&& !replace->replaceForTest()->isEnabled() && replace->regExpForTest()->isChecked();
+		replace->regExpForTest()->click();
+		typeInto(replace->findTextForTest(), QStringLiteral("x"));
+		typeInto(replace->replaceTextForTest(), QStringLiteral("y"));
+		told.clear();
+		replace->replaceAllForTest()->click();
+		const bool inside = line(1) == QStringLiteral("y1 y2 y3") && line(2) == QStringLiteral("y4 y5")
+			&& line(4) == QStringLiteral("end x") && told == QStringList{ numReplaced(5) };
+		replace->wholeFileScopeForTest()->click();
+		const bool replaceBack = replace->replaceForTest()->isEnabled();
+		replace->reject();
+		const QTextCursor after = editPane->textCursor();
+		check(scoped && inside && replaceBack && after.hasSelection() && editAt() == QPoint(0, 1)
+				&& after.selectionEnd() == editPane->document()->findBlockByNumber(2).position() + 5,
+			"Selection: Replace All in it only, Replace off there; Cancel brings the selection back");
+
+		QStringList keys;
+		for (const lm::HideableMessage &message : lm::hideableMessages())
+			keys.append(message.key);
+		check(keys.indexOf(QStringLiteral("NumReplaced")) == keys.indexOf(QStringLiteral("FileToItself")) + 1
+				&& keys.indexOf(QStringLiteral("FileChangedRescan"))
+					== keys.indexOf(QStringLiteral("NumReplaced")) + 1,
+			"Replace All's count: a message that can be hidden, listed where upstream lists it");
+
+		// --- the Edit menu ---
+		{
+			MainWindow window;
+			auto *findAction = window.findChild<QAction *>(QStringLiteral("editFind"));
+			auto *replaceAction = window.findChild<QAction *>(QStringLiteral("editReplace"));
+			auto *repeat = window.findChild<QAction *>(QStringLiteral("editFindNext"));
+			auto *repeatBack = window.findChild<QAction *>(QStringLiteral("editFindPrevious"));
+			QMenu *editMenu = nullptr;
+			for (QAction *title : window.menuBar()->actions())
+				if (title->menu() != nullptr && title->menu()->actions().contains(findAction))
+					editMenu = title->menu();
+			check(findAction != nullptr && replaceAction != nullptr && repeat != nullptr
+					&& repeatBack != nullptr && editMenu != nullptr
+					&& findAction->text() == MainWindow::tr("F&ind...")
+					&& replaceAction->text() == MainWindow::tr("Repla&ce...")
+					&& editMenu->actions().contains(replaceAction)
+					&& !editMenu->actions().contains(repeat)
+					&& repeat->shortcuts().contains(QKeySequence(Qt::Key_F3))
+					&& repeatBack->shortcuts().contains(QKeySequence(Qt::SHIFT | Qt::Key_F3)),
+				"Edit: Find... and Replace..., and F3 with Shift without an item, as upstream");
+		}
+
+		lm::setMessageSinkForTest([](const QString &) {});
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestMarkersOpt))
+	{
+		// WinMerge's Marker dialog (CTextMarkerDlg, Edit > Marker...) and the
+		// markers the panes draw
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		const QString shots = qEnvironmentVariable("MERGEDESK_SELFTEST_SHOTS");
+		const QString language = qEnvironmentVariable("MERGEDESK_LANGUAGE", QStringLiteral("en"));
+		const auto shoot = [&shots, &language](QWidget *widget, const char *name)
+		{
+			if (!shots.isEmpty())
+				widget->grab().save(QStringLiteral("%1/mk-%2-%3.png").arg(shots, language,
+					QLatin1String(name)));
+		};
+		const auto typeInto = [](QComboBox *field, const QString &text)
+		{
+			field->lineEdit()->setText(text);
+			emit field->lineEdit()->textEdited(text);
+		};
+		// the list as it shows: each marker's text, "(off)" when unticked
+		const auto listed = [](TextMarkerDialog *dialog) {
+			QStringList texts;
+			QListWidget *list = dialog->listForTest();
+			for (int i = 0; i < list->count(); ++i)
+				texts.append(list->item(i)->text()
+					+ (list->item(i)->checkState() == Qt::Checked ? QString() : QStringLiteral(" (off)")));
+			return texts;
+		};
+		const auto put = [](FileCompareView &view, int line, int column) {
+			view.setCursorViewLineForTest(0, line);
+			DiffTextEdit *pane = view.paneForTest(0);
+			QTextCursor cursor = pane->textCursor();
+			cursor.setPosition(cursor.block().position() + column);
+			pane->setTextCursor(cursor);
+		};
+		lm::TextMarkers *markers = lm::TextMarkers::instance();
+
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		write(left, "apple banana cherry\nbanana split apple\nCherry pie\n");
+		write(right, "apple banana cherry\nbanana split apple\ncherry pie\n");
+		FileCompareView view;
+		QString error;
+		if (!view.compare(QStringList{ left, right }, &error))
+		{
+			printf("compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		view.resize(1000, 600);
+		view.show();
+		settle();
+		DiffTextEdit *const panes[2] = { view.paneForTest(0), view.paneForTest(1) };
+		const QColor color1 = lm::markerColor(lm::TextMarkers::MarkerColor1);
+		const QColor color3 = lm::markerColor(lm::TextMarkers::MarkerColor3);
+
+		// --- opened over a word: it comes as a new marker ---
+		QStringList first, afterNew, named, afterDelete, applied, unticked, switchedOff;
+		QList<QColor> appliedColors;
+		QStringList rightApplied;
+		bool firstShown = false, newShown = false, backToFirst = false, kept = false;
+		bool lastChosen = false, noWholeWord = false;
+		put(view, 0, 1); // in "apple"
+		TextMarkerDialog::setPresenterForTest([&](TextMarkerDialog *dialog) {
+			shoot(dialog, "markers");
+			first = listed(dialog);
+			firstShown = dialog->windowTitle() == TextMarkerDialog::tr("Markers")
+				&& dialog->findWhatForTest()->currentText() == QStringLiteral("apple")
+				&& dialog->colorForTest()->currentIndex() == 0
+				&& dialog->enabledForTest()->isChecked()
+				&& dialog->listForTest()->currentRow() == 0;
+			dialog->newForTest()->click();
+			afterNew = listed(dialog);
+			newShown = dialog->findWhatForTest()->currentText() == TextMarkerDialog::tr("New Pattern")
+				&& dialog->colorForTest()->currentIndex() == 1
+				&& dialog->listForTest()->currentRow() == 1;
+			typeInto(dialog->findWhatForTest(), QStringLiteral("banana"));
+			dialog->colorForTest()->setCurrentIndex(2);
+			named = listed(dialog);
+			dialog->listForTest()->setCurrentRow(0);
+			backToFirst = dialog->findWhatForTest()->currentText() == QStringLiteral("apple")
+				&& dialog->colorForTest()->currentIndex() == 0;
+			for (const auto &entry : dialog->markersForTest())
+				kept = kept || (entry.second.findWhat == QStringLiteral("banana")
+					&& entry.second.color == lm::TextMarkers::MarkerColor3);
+			dialog->newForTest()->click();
+			typeInto(dialog->findWhatForTest(), QStringLiteral("pie"));
+			dialog->deleteForTest()->click();
+			afterDelete = listed(dialog);
+			lastChosen = dialog->listForTest()->currentRow() == 1
+				&& dialog->findWhatForTest()->currentText() == QStringLiteral("banana");
+			dialog->wholeWordForTest()->click();
+			dialog->regExpForTest()->click();
+			noWholeWord = !dialog->wholeWordForTest()->isEnabled()
+				&& !dialog->wholeWordForTest()->isChecked();
+			dialog->regExpForTest()->click();
+			dialog->applyForTest()->click();
+			settle();
+			applied = panes[0]->markedTextsForTest();
+			appliedColors = panes[0]->markedColorsForTest();
+			shoot(&view, "panes");
+			rightApplied = panes[1]->markedTextsForTest();
+			dialog->listForTest()->item(0)->setCheckState(Qt::Unchecked);
+			dialog->applyForTest()->click();
+			settle();
+			unticked = panes[0]->markedTextsForTest();
+			dialog->enabledForTest()->setChecked(false);
+			dialog->applyForTest()->click();
+			settle();
+			switchedOff = panes[0]->markedTextsForTest();
+			dialog->enabledForTest()->setChecked(true);
+			dialog->matchCaseForTest()->click();
+			dialog->accept();
+			return true;
+		});
+		view.showMarker();
+		TextMarkerDialog::setPresenterForTest({});
+		settle();
+		printf("  listed: %s, then %s, %s, %s\n", qPrintable(first.join(QStringLiteral(" | "))),
+			qPrintable(afterNew.join(QStringLiteral(" | "))), qPrintable(named.join(QStringLiteral(" | "))),
+			qPrintable(afterDelete.join(QStringLiteral(" | "))));
+		check(first == QStringList{ QStringLiteral("apple") } && firstShown,
+			"Marker...: the word at the cursor as a new marker, ticked and chosen, markers on");
+		check(afterNew == QStringList{ QStringLiteral("apple"), TextMarkerDialog::tr("New Pattern") }
+				&& newShown && named == QStringList{ QStringLiteral("apple"), QStringLiteral("banana") },
+			"New: \"New Pattern\" in the next color, renamed in the list as it is typed");
+		check(backToFirst && kept, "choosing another marker: its values, the one left keeps what was typed");
+		check(afterDelete == QStringList{ QStringLiteral("apple"), QStringLiteral("banana") } && lastChosen,
+			"Delete: the chosen marker goes, the last one is chosen");
+		check(noWholeWord, "Regular expression: no whole word with it");
+		printf("  applied: %s\n", qPrintable(applied.join(QStringLiteral(" | "))));
+		check(applied == QStringList{ QStringLiteral("apple"), QStringLiteral("banana"),
+					QStringLiteral("apple"), QStringLiteral("banana") }
+				&& appliedColors == QList<QColor>{ color1, color3, color1, color3 }
+				&& rightApplied == applied,
+			"Apply: every pane marks each text in its marker's color");
+		check(unticked == QStringList{ QStringLiteral("banana"), QStringLiteral("banana") }
+				&& switchedOff.isEmpty(),
+			"an unticked marker is not drawn, and with markers off none is");
+		const QStringList afterOk = panes[0]->markedTextsForTest();
+		check(afterOk == QStringList{ QStringLiteral("banana"), QStringLiteral("banana") }
+				&& markers->enabled()
+				&& QSettings().value(QStringLiteral("Editor/MarkerFlags")).toUInt() == lm::FindMatchCase,
+			"OK: applied and closed, the flags it was left with kept");
+
+		// the settings: the user's markers, each as it was, and the switch
+		markers->setMarkers({}, false);
+		markers->load();
+		QStringList reloaded;
+		for (const auto &entry : markers->markers())
+			reloaded.append(entry.second.findWhat + QStringLiteral("/%1/%2/%3").arg(entry.second.color)
+				.arg(entry.second.flags).arg(entry.second.visible ? QStringLiteral("on") : QStringLiteral("off")));
+		printf("  reloaded: %s\n", qPrintable(reloaded.join(QStringLiteral(" | "))));
+		check(markers->enabled() && reloaded == QStringList{ QStringLiteral("apple/1/0/off"),
+					QStringLiteral("banana/3/1/on") },
+			"the settings: the markers come back as they were, an unticked one unticked");
+
+		// Cancel: what was not applied does not count
+		bool selectionAsNew = false;
+		{
+			QTextCursor split(panes[0]->document());
+			const QTextBlock line = panes[0]->document()->findBlockByNumber(1);
+			split.setPosition(line.position() + 7);
+			split.setPosition(line.position() + 12, QTextCursor::KeepAnchor);
+			panes[0]->setTextCursor(split);
+		}
+		TextMarkerDialog::setPresenterForTest([&](TextMarkerDialog *dialog) {
+			// the third marker, in the third color: one each so far
+			selectionAsNew = listed(dialog).value(2) == QStringLiteral("split")
+				&& dialog->colorForTest()->currentIndex() == 2;
+			dialog->enabledForTest()->setChecked(false);
+			return false;
+		});
+		view.showMarker();
+		TextMarkerDialog::setPresenterForTest({});
+		settle();
+		check(selectionAsNew && markers->enabled() && markers->markers().size() == 2
+				&& panes[0]->markedTextsForTest() == afterOk,
+			"the selection within a line as a new marker; Cancel leaves what was applied");
+
+		// the search's marker: drawn first, under the user's; markers off
+		// take it away too; it counts for the next marker's color
+		markers->setMarker(lm::TextMarkers::searchKey(), QStringLiteral("ban"), 0,
+			lm::TextMarkers::SearchColor, false);
+		QStringList order;
+		for (const lm::TextMarkers::Stretch &stretch : markers->stretches(QStringLiteral("banana pie")))
+			order.append(QStringLiteral("%1+%2:%3").arg(stretch.start).arg(stretch.length).arg(stretch.color));
+		printf("  over \"banana pie\": %s\n", qPrintable(order.join(QStringLiteral(" "))));
+		bool searchOff = false;
+		bool countsSearch = false;
+		put(view, 2, 1); // in "Cherry"
+		TextMarkerDialog::setPresenterForTest([&](TextMarkerDialog *dialog) {
+			countsSearch = listed(dialog).value(2) == QStringLiteral("Cherry")
+				&& dialog->colorForTest()->currentIndex() == 0;
+			dialog->enabledForTest()->setChecked(false);
+			dialog->applyForTest()->click();
+			settle();
+			searchOff = panes[0]->markedTextsForTest().isEmpty();
+			dialog->enabledForTest()->setChecked(true);
+			dialog->listForTest()->item(2)->setCheckState(Qt::Unchecked);
+			dialog->applyForTest()->click();
+			return false;
+		});
+		view.showMarker();
+		TextMarkerDialog::setPresenterForTest({});
+		check(order == QStringList{ QStringLiteral("0+3:0"), QStringLiteral("0+6:3") }
+				&& searchOff && countsSearch,
+			"the search's marker: under the user's, off with them, and counted for the next color");
+
+		// the dark theme: the match found (the selection's blue) apart from
+		// the other occurrences (green) and the third color (purple)
+		lm::Theme::instance()->setMode(lm::ThemeMode::Dark);
+		{
+			lm::LastSearchInfos search;
+			search.text = QStringLiteral("cherry");
+			put(view, 0, 0);
+			view.paneSearchForTest(0)->findText(search);
+		}
+		settle();
+		shoot(&view, "panes-dark");
+		QStringList darkMarks;
+		const QStringList darkTexts = panes[0]->markedTextsForTest();
+		const QList<QColor> darkColors = panes[0]->markedColorsForTest();
+		for (int i = 0; i < darkTexts.size(); ++i)
+			darkMarks.append(darkTexts.at(i) + QLatin1Char('/') + darkColors.value(i).name());
+		printf("  dark: %s\n", qPrintable(darkMarks.join(QStringLiteral(" "))));
+		check(darkMarks.contains(QStringLiteral("cherry/#287034"))
+				&& darkMarks.contains(QStringLiteral("Cherry/#287034"))
+				&& darkMarks.contains(QStringLiteral("banana/#885094"))
+				&& panes[0]->textCursor().selectedText() == QStringLiteral("cherry"),
+			"the dark theme: the search's marker green, the third color purple, the match found in the selection's blue");
+		lm::Theme::instance()->setMode(lm::ThemeMode::System);
+
+		// --- the Edit menu ---
+		{
+			MainWindow window;
+			auto *markAction = window.findChild<QAction *>(QStringLiteral("editMark"));
+			check(markAction != nullptr && markAction->text() == MainWindow::tr("&Marker...")
+					&& markAction->shortcut() == QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_M),
+				"Edit: Marker... with Ctrl+Shift+M, as upstream");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestHexEditOpt))
+	{
+		// the hex editor's dialogs, as WinMerge's binary comparison opens
+		// them: Frhed's special syntax for bytes as text, Copy, Cut,
+		// Delete, Paste with dialogue, Find with F3, Replace and Go To,
+		// and the context menu that lists them
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto hexOf = [](const QByteArray &bytes) { return QString::fromLatin1(bytes.toHex(' ')); };
+		QStringList messages;
+		lm::setMessageSinkForTest([&messages](const QString &text) { messages << text; });
+
+		// --- the special syntax ---
+		const QByteArray raw("\x00<\\A\n\xff", 6);
+		const QString coded = lm::hex::bytesToSpecialSyntax(raw);
+		printf("  coded: %s\n", qPrintable(coded));
+		check(coded == QStringLiteral("<bh:00>\\<\\\\A\n<bh:ff>") && lm::hex::specialSyntaxToBytes(coded) == raw,
+			"bytes as text: printable as they are, \\< and \\\\, <bh:..> for the rest, and back");
+		check(lm::hex::specialSyntaxToBytes(QStringLiteral("<bd:65><wh:1234><ld:1>x"))
+				== QByteArray("A\x34\x12\x01\x00\x00\x00x", 8)
+				&& lm::hex::specialSyntaxToBytes(QStringLiteral("<bh:zz>")) == QByteArray("<bh:zz>"),
+			"<bd:..>, <wh:..>, <ld:..> little-endian; a malformed code is text");
+		qsizetype offset = 0;
+		check(lm::hex::parseOffset(QStringLiteral("x10"), &offset) && offset == 16
+				&& lm::hex::parseOffset(QStringLiteral("0X1f"), &offset) && offset == 31
+				&& lm::hex::parseOffset(QStringLiteral("42"), &offset) && offset == 42
+				&& !lm::hex::parseOffset(QStringLiteral("zz"), &offset),
+			"offsets: decimal, or hex after x or 0x");
+		check(lm::hex::findBytes(QByteArray("xxABCxxabc"), 0, 10, QByteArray("abc"), 1, false) == 2
+				&& lm::hex::findBytes(QByteArray("xxABCxxabc"), 0, 10, QByteArray("abc"), 1, true) == 7
+				&& lm::hex::findBytes(QByteArray("xxABCxxabc"), 0, 10, QByteArray("ABC"), -1, false) == 7,
+			"finding bytes: from either end, A to Z equal to a to z without matching case");
+
+		// a comparison to edit: 32 bytes 0x10..0x2f on both sides, the
+		// right side differing at 5
+		QByteArray bytes;
+		for (int i = 0; i < 32; ++i)
+			bytes.append(static_cast<char>(0x10 + i));
+		QByteArray other = bytes;
+		other[5] = 'Q';
+		const QString left = dir.filePath(QStringLiteral("left.dat"));
+		const QString right = dir.filePath(QStringLiteral("right.dat"));
+		for (const auto &[path, content] : { std::pair{ left, bytes }, std::pair{ right, other } })
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly))
+				return 2;
+			f.write(content);
+		}
+		HexCompareView view;
+		QString error;
+		if (!view.compare(QStringList{ left, right }, &error))
+			return 2;
+		view.resize(1000, 600);
+		view.show();
+		HexView *const pane = view.paneForTest(0);
+		pane->setFocus();
+		QApplication::processEvents();
+
+		// --- Copy, Cut and Delete ---
+		QString title, start, end, count;
+		bool countEnabled = true;
+		HexRangeDialog::setPresenterForTest([&](HexRangeDialog *dialog) {
+			title = dialog->windowTitle();
+			start = dialog->startField()->text();
+			end = dialog->endField()->text();
+			count = dialog->countField()->text();
+			countEnabled = dialog->countField()->isEnabled();
+			dialog->accept();
+			return dialog->result() == QDialog::Accepted;
+		});
+		pane->setSelection(2, 4);
+		{
+			QKeyEvent key(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier);
+			QKeyEvent cmd(QEvent::KeyPress, Qt::Key_C, QKeySequence(QKeySequence::Copy)[0].keyboardModifiers());
+			QApplication::sendEvent(pane, &cmd);
+		}
+		check(title == HexRangeDialog::tr("Copy") && start == QStringLiteral("0x2")
+				&& end == QStringLiteral("0x4") && count == QStringLiteral("3") && !countEnabled
+				&& QGuiApplication::clipboard()->text() == QStringLiteral("<bh:12><bh:13><bh:14>")
+				&& pane->length() == 32,
+			"Copy (its key): the selection's offsets and count, the bytes to the clipboard as text");
+		HexRangeDialog::setPresenterForTest([](HexRangeDialog *dialog) {
+			dialog->countButton()->setChecked(true);
+			dialog->countField()->setText(QStringLiteral("2"));
+			dialog->accept();
+			return dialog->result() == QDialog::Accepted;
+		});
+		pane->placeCaret(6);
+		pane->editCut();
+		check(pane->length() == 30 && pane->data().at(6) == 0x18 && pane->caretByte() == 6
+				&& QGuiApplication::clipboard()->text() == QStringLiteral("<bh:16><bh:17>")
+				&& pane->isModified(),
+			"Cut: two bytes from the caret by count, to the clipboard and out of the data");
+		HexRangeDialog::setPresenterForTest([](HexRangeDialog *dialog) {
+			dialog->countButton()->setChecked(true);
+			dialog->countField()->setText(QStringLiteral("x2"));
+			dialog->accept();
+			return dialog->result() == QDialog::Accepted;
+		});
+		{
+			QKeyEvent del(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+			QApplication::sendEvent(pane, &del);
+		}
+		check(pane->length() == 28 && pane->data().at(6) == 0x1a,
+			"Delete (its key): its count takes an offset's hex notation too, as Frhed's");
+		messages.clear();
+		bool accepted = true;
+		HexRangeDialog::setPresenterForTest([&accepted](HexRangeDialog *dialog) {
+			dialog->countButton()->setChecked(true);
+			dialog->countField()->setText(QStringLiteral("999"));
+			dialog->accept();
+			accepted = dialog->result() == QDialog::Accepted;
+			return accepted;
+		});
+		pane->editCopy();
+		check(!accepted && messages == QStringList{ HexRangeDialog::tr("Can't copy more bytes than are present.") },
+			"more bytes than there are: the dialog says so and stays");
+		HexRangeDialog::setPresenterForTest(nullptr);
+		while (view.canUndo())
+			view.undo();
+		check(pane->data() == bytes && !pane->isModified(), "Undo takes the cut and the delete back");
+
+		// --- Paste with dialogue ---
+		QGuiApplication::clipboard()->setText(QStringLiteral("<bh:aa><bh:bb>"));
+		HexPasteDialog::setPresenterForTest([](HexPasteDialog *dialog) {
+			dialog->timesField()->setText(QStringLiteral("2"));
+			dialog->skipField()->setText(QStringLiteral("1"));
+			dialog->accept();
+			return dialog->result() == QDialog::Accepted;
+		});
+		pane->placeCaret(4);
+		pane->editPaste();
+		printf("  after overwriting: %s\n", qPrintable(hexOf(pane->data().mid(2, 8))));
+		check(pane->length() == 32 && pane->data().mid(4, 5) == QByteArray("\xaa\xbb\x16\xaa\xbb", 5),
+			"overwriting: the clipboard's bytes twice, one byte skipped between");
+		view.undo();
+		HexPasteDialog::setPresenterForTest([](HexPasteDialog *dialog) {
+			dialog->timesField()->setText(QStringLiteral("1"));
+			dialog->skipField()->setText(QStringLiteral("0"));
+			dialog->insertButton()->setChecked(true);
+			dialog->accept();
+			return dialog->result() == QDialog::Accepted;
+		});
+		pane->placeCaret(4);
+		pane->editPaste();
+		check(pane->length() == 34 && pane->data().mid(3, 4) == QByteArray("\x13\xaa\xbb\x14", 4),
+			"inserting: the bytes come in at the caret");
+		view.undo();
+		HexPasteDialog::setPresenterForTest([](HexPasteDialog *dialog) {
+			dialog->asTextBox()->setChecked(true);
+			dialog->accept();
+			return dialog->result() == QDialog::Accepted;
+		});
+		pane->setSelection(1, 3);
+		pane->editPaste();
+		check(pane->length() == 43 && pane->data().mid(1, 14) == QByteArray("<bh:aa><bh:bb>"),
+			"over a selection, coded values as text: the text itself replaces the selection");
+		view.undo();
+		HexPasteDialog::setPresenterForTest([](HexPasteDialog *dialog) {
+			dialog->asTextBox()->setChecked(false);
+			dialog->insertButton()->setChecked(false);
+			dialog->accept();
+			return dialog->result() == QDialog::Accepted;
+		});
+		messages.clear();
+		pane->placeCaret(31);
+		pane->editPaste();
+		check(pane->data() == bytes
+				&& messages == QStringList{ HexPasteDialog::tr("Not enough space for overwriting.") },
+			"overwriting past the end: not enough space");
+		HexPasteDialog::setPresenterForTest(nullptr);
+
+		// --- Find, F3, Shift+F3 ---
+		HexFindDialog::setPresenterForTest([](HexFindDialog *dialog) {
+			dialog->textField()->setPlainText(QStringLiteral("<bh:1a><bh:1b>"));
+			return true;
+		});
+		pane->placeCaret(0);
+		view.showFind();
+		check(pane->hasSelection() && pane->selectionLower() == 0x0a && pane->selectionUpper() == 0x0b,
+			"Find: the bytes in the special syntax, selected");
+		pane->placeCaret(20);
+		messages.clear();
+		view.findRepeat(false);
+		check(!pane->hasSelection() && messages == QStringList{ HexView::tr("Could not find any more occurrences.") },
+			"F3: no more after the caret");
+		view.findRepeat(true);
+		check(pane->hasSelection() && pane->selectionLower() == 0x0a, "Shift+F3: the previous occurrence");
+		pane->setSelection(0x0b, 0x0b);
+		view.findRepeat(false);
+		check(pane->findTextForTest() == QStringLiteral("<bh:1b>") && pane->hasSelection()
+				&& pane->selectionLower() == 0x0b,
+			"F3 over a selection looks for the selection (here the only one, left selected)");
+		HexFindDialog::setPresenterForTest([](HexFindDialog *dialog) {
+			dialog->textField()->setPlainText(QStringLiteral("<bh:1f>"));
+			dialog->upButton()->setChecked(true);
+			return true;
+		});
+		pane->placeCaret(31);
+		view.showFind();
+		check(pane->selectionLower() == 0x0f, "Find up: before the caret");
+		messages.clear();
+		HexFindDialog::setPresenterForTest([](HexFindDialog *dialog) {
+			dialog->textField()->setPlainText(QStringLiteral("nothing like it"));
+			return true;
+		});
+		view.showFind();
+		check(messages == QStringList{ HexFindDialog::tr("Could not find data.") }, "Find: not found");
+		HexFindDialog::setPresenterForTest(nullptr);
+
+		// --- Replace ---
+		HexReplaceDialog::setPresenterForTest([&](HexReplaceDialog *dialog) {
+			dialog->findField()->setPlainText(QStringLiteral("<bh:12>"));
+			dialog->replaceField()->setPlainText(QStringLiteral("<bh:ee><bh:ee>"));
+			dialog->findNext();
+			dialog->replace();
+		});
+		pane->placeCaret(0);
+		view.showReplace();
+		check(pane->length() == 33 && pane->data().mid(1, 3) == QByteArray("\x11\xee\xee"),
+			"Replace: Find next selects, Replace puts the bytes in its place");
+		messages.clear();
+		HexReplaceDialog::setPresenterForTest([](HexReplaceDialog *dialog) {
+			dialog->findField()->setPlainText(QStringLiteral("<bh:ee>"));
+			dialog->replaceField()->setPlainText(QStringLiteral("<bh:dd>"));
+			dialog->findNext();
+			dialog->replaceFollowing();
+		});
+		pane->placeCaret(0);
+		view.showReplace();
+		check(pane->data().mid(1, 3) == QByteArray("\x11\xdd\xdd")
+				&& messages == QStringList{ HexReplaceDialog::tr("%1 occurrences replaced.").arg(2) },
+			"Replace all following occurrences, with the count");
+		messages.clear();
+		HexReplaceDialog::setPresenterForTest([](HexReplaceDialog *dialog) {
+			dialog->findField()->setPlainText(QStringLiteral("<bh:dd>"));
+			dialog->replaceField()->setPlainText(QStringLiteral("<bd:221>"));
+			dialog->replaceFollowing();
+		});
+		view.showReplace();
+		check(messages == QStringList{ HexReplaceDialog::tr("To-replace and replace-with data are same.") },
+			"the same bytes on both sides: nothing to do");
+		HexReplaceDialog::setPresenterForTest(nullptr);
+		while (view.canUndo())
+			view.undo();
+
+		// --- Go To ---
+		QString goToText;
+		HexGoToDialog::setPresenterForTest([&goToText](HexGoToDialog *dialog) {
+			dialog->offsetField()->setText(goToText);
+			dialog->accept();
+			return dialog->result() == QDialog::Accepted;
+		});
+		pane->placeCaret(3);
+		goToText = QStringLiteral("x10");
+		view.showGoTo();
+		check(pane->caretByte() == 16, "Go To: x10 is offset 16");
+		goToText = QStringLiteral("+3");
+		view.showGoTo();
+		check(pane->caretByte() == 19, "+3 jumps forward from the caret");
+		goToText = QStringLiteral("-100");
+		view.showGoTo();
+		check(pane->caretByte() == 0, "past the start: the first byte");
+		messages.clear();
+		goToText = QStringLiteral("zz");
+		view.showGoTo();
+		check(pane->caretByte() == 0 && messages == QStringList{ HexGoToDialog::tr("Offset not recognized.") },
+			"an offset that is none: the dialog says so");
+		HexGoToDialog::setPresenterForTest(nullptr);
+
+		// --- the context menu ---
+		QStringList items;
+		QList<bool> enabled;
+		HexView::setContextMenuPresenterForTest([&](QMenu *menu) {
+			for (QAction *action : menu->actions())
+			{
+				if (action->isSeparator())
+					continue;
+				items << action->text();
+				enabled << action->isEnabled();
+			}
+		});
+		view.setReadOnlySides({ true, false });
+		{
+			// Font metrics vary by platform. Right-click the first byte,
+			// not a fixed pixel that may land in the offset-length gutter.
+			const QPoint at = pane->pointForTest(0, 0, false);
+			QContextMenuEvent event(QContextMenuEvent::Mouse, at,
+				pane->viewport()->mapToGlobal(at));
+			QApplication::sendEvent(pane->viewport(), &event);
+		}
+		HexView::setContextMenuPresenterForTest(nullptr);
+		printf("  context menu: %s\n", qPrintable(items.join(QStringLiteral(", "))));
+		check(items.size() == 9 && items.at(0) == HexView::tr("Cu&t...") && items.at(8) == HexView::tr("&Go To...")
+				&& enabled == QList<bool>{ false, true, false, false, true, false, true, true, true },
+			"the context menu: Frhed's nine commands, the editing ones off in a read-only pane");
+		view.setReadOnlySides({ false, false });
+
+		// --- the editor's settings, from Options > Compare > Binary ---
+		{
+			OptionsDialog options;
+			QWidget *binaryPage = options.pageForTest(OptionsDialog::BinaryPage);
+			const auto press = [binaryPage](const QString &text) {
+				for (QPushButton *button : binaryPage->findChildren<QPushButton *>())
+					if (button->text() == text)
+						button->click();
+			};
+			HexViewSettingsDialog::setPresenterForTest([](HexViewSettingsDialog *dialog) {
+				dialog->automaticBytesBox()->setChecked(false);
+				dialog->bytesPerLineField()->setText(QStringLiteral("8"));
+				dialog->automaticOffsetBox()->setChecked(false);
+				dialog->offsetLengthField()->setText(QStringLiteral("6"));
+				dialog->signedButton()->setChecked(true);
+				dialog->accept();
+				return true;
+			});
+			press(OptionsDialog::tr("View &Settings..."));
+			pane->placeCaret(0);
+			QApplication::processEvents();
+			printf("  first line: \"%s\"\n", qPrintable(pane->lineTextForTest(0)));
+			check(pane->bytesPerLine() == 8 && pane->offsetLength() == 6
+					&& pane->lineTextForTest(0).startsWith(QStringLiteral("000000  10 11 12"))
+					&& view.statusTextForTest(0).contains(HexView::tr("Signed")),
+				"View Settings: eight bytes a line, six offset digits, signed values; every pane at once");
+			HexBinaryModeDialog::setPresenterForTest([](HexBinaryModeDialog *dialog) {
+				dialog->bigEndianButton()->setChecked(true);
+				dialog->accept();
+				return true;
+			});
+			press(OptionsDialog::tr("&Binary Mode..."));
+			const QString bigStatus = view.statusTextForTest(0);
+			printf("  big-endian status: %s\n", qPrintable(bigStatus));
+			check(bigStatus.contains(QStringLiteral("W:4113")) && bigStatus.endsWith(HexView::tr("B")
+					+ QStringLiteral(" | ") + HexView::tr("Size") + QStringLiteral(": 32"))
+					&& lm::hex::specialSyntaxToBytes(QStringLiteral("<wh:1234>"), true) == QByteArray("\x12\x34"),
+				"Binary Mode: big-endian values at the caret and words in the special syntax");
+			HexCharacterSetDialog::setPresenterForTest([](HexCharacterSetDialog *dialog) {
+				dialog->oemButton()->setChecked(true);
+				dialog->fontSizeField()->setText(QStringLiteral("15"));
+				dialog->accept();
+				return true;
+			});
+			press(OptionsDialog::tr("&Character Set..."));
+			check(pane->lineTextForTest(0).contains(QChar(0x25BA)) && view.statusTextForTest(0).contains(HexView::tr("OEM"))
+					&& qAbs(pane->font().pointSizeF() - 15) < 0.01,
+				"Character Set: OEM shows code page 437 (byte 10 as an arrow), the font in 15 points");
+			pane->placeCaret(0);
+			{
+				QKeyEvent tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+				QApplication::sendEvent(pane, &tab);
+				QKeyEvent e(QEvent::KeyPress, 0, Qt::NoModifier, QString(QChar(0xe9)));
+				QApplication::sendEvent(pane, &e);
+				QKeyEvent back(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+				QApplication::sendEvent(pane, &back);
+			}
+			check(static_cast<unsigned char>(pane->data().at(0)) == 0x82,
+				"typing in the text column takes the OEM byte (\u00e9 is 0x82)");
+			view.undo();
+			{
+				// Editing the character column can scroll the offsets out of
+				// view with a wide native font. Reveal the gutter before clicking.
+				pane->horizontalScrollBar()->setValue(0);
+				const QPointF at(2, 2);
+				QMouseEvent click(QEvent::MouseButtonPress, at, pane->viewport()->mapToGlobal(at),
+					Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+				QApplication::sendEvent(pane->viewport(), &click);
+				QMouseEvent release(QEvent::MouseButtonRelease, at, pane->viewport()->mapToGlobal(at),
+					Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+				QApplication::sendEvent(pane->viewport(), &release);
+			}
+			check(pane->offsetLength() == 5, "a click on the offsets shortens them, their length being fixed");
+			HexViewSettingsDialog::setPresenterForTest(nullptr);
+			HexBinaryModeDialog::setPresenterForTest(nullptr);
+			HexCharacterSetDialog::setPresenterForTest(nullptr);
+			HexSettings().save();
+			const int automaticBytes = pane->bytesPerLine();
+			const QSize originalSize = view.size();
+			view.resize(originalSize.width() + 400, originalSize.height());
+			QApplication::processEvents();
+			// Automatic fitting can legitimately choose eight bytes at a
+			// particular font/width; it must respond when more space is given.
+			check(pane->settings().automaticBytesPerLine && pane->bytesPerLine() > automaticBytes
+					&& !view.statusTextForTest(0).contains(HexView::tr("OEM")),
+				"the defaults back: as many bytes as fit, ANSI");
+			view.resize(originalSize);
+
+			// the patterns: a pattern of the drop-down toggles in the field
+			auto *patterns = binaryPage->findChild<QComboBox *>();
+			emit patterns->activated(0);
+			options.saveForTest();
+			const QString kept = QSettings().value(QStringLiteral("BinaryCompare/FilePatterns")).toString();
+			emit patterns->activated(0);
+			check(kept == QStringLiteral("*.frx") && patterns->currentText() == QStringLiteral("*.frx;*.bin"),
+				"Binary file patterns: *.bin of the drop-down goes and comes back");
+			QSettings().remove(QStringLiteral("BinaryCompare/FilePatterns"));
+		}
+
+		lm::setMessageSinkForTest([](const QString &) {});
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestUniqueItemsOpt))
+	{
+		// upstream's CDirView::Open: an item of a folder comparison on one
+		// side only opens with the sides it misses as empty untitled panes,
+		// in the comparison its file calls for; saving such a pane asks
+		// for a name
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		const auto waitFor = [](FolderCompareView *view) {
+			for (int i = 0; i < 400 && view->isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+		QStringList messages;
+		lm::setMessageSinkForTest([&messages](const QString &text) { messages << text; });
+
+		const QString left = dir.filePath(QStringLiteral("left"));
+		const QString right = dir.filePath(QStringLiteral("right"));
+		write(left + QStringLiteral("/same.txt"), "same\n");
+		write(right + QStringLiteral("/same.txt"), "same\n");
+		write(left + QStringLiteral("/only-left.txt"), "one\ntwo\n");
+		write(right + QStringLiteral("/only-right.txt"), "three\n");
+		write(left + QStringLiteral("/only-left.csv"), "id,name\n1,apple\n");
+		QImage red(16, 16, QImage::Format_RGB32);
+		red.fill(Qt::red);
+		red.save(left + QStringLiteral("/only-left.png"));
+		write(left + QStringLiteral("/only-left.bin"), QByteArray("\x00\x01\x02", 3));
+
+		MainWindow window;
+		window.handleIncomingPaths({ left, right });
+		auto *folder = window.findChild<FolderCompareView *>();
+		if (folder == nullptr)
+			return 1;
+		waitFor(folder);
+		const auto opened = [&window](auto *type, const QStringList &paths) {
+			using View = std::remove_pointer_t<decltype(type)>;
+			for (View *view : window.findChildren<View *>())
+				if (view->paths() == paths)
+					return view;
+			return static_cast<View *>(nullptr);
+		};
+
+		// --- text ---
+		folder->activateRowForTest(QStringLiteral("only-left.txt"));
+		QCoreApplication::processEvents();
+		const QString onlyLeft = left + QStringLiteral("/only-left.txt");
+		FileCompareView *text = opened(static_cast<FileCompareView *>(nullptr), { onlyLeft, QString() });
+		check(text != nullptr && text->headerForTest(1)->originalText() == FileCompareView::tr("Untitled Right")
+				&& text->tabTitle().endsWith(FileCompareView::tr("Untitled Right"))
+				&& text->diffCount() == 1,
+			"text: a file on the left only opens against an empty untitled right pane");
+		folder->activateRowForTest(QStringLiteral("only-right.txt"));
+		QCoreApplication::processEvents();
+		FileCompareView *textRight = opened(static_cast<FileCompareView *>(nullptr),
+			{ QString(), right + QStringLiteral("/only-right.txt") });
+		check(textRight != nullptr
+				&& textRight->headerForTest(0)->originalText() == FileCompareView::tr("Untitled Left"),
+			"text: one on the right only, against an untitled left pane");
+		if (text != nullptr)
+		{
+			const QString saved = dir.filePath(QStringLiteral("saved.txt"));
+			QString asked;
+			lm::setSaveAsPathForTest([&asked, saved](const QString &) {
+				asked = saved;
+				return saved;
+			});
+			text->typeAtForTest(1, 0, QStringLiteral("new\n"));
+			QCoreApplication::processEvents();
+			QString error;
+			const bool done = text->saveModified(&error);
+			lm::setSaveAsPathForTest(nullptr);
+			check(done && asked == saved && read(saved).startsWith("new")
+					&& text->paths().at(1) == saved && text->headerForTest(1)->originalText() == saved,
+				"text: saving the untitled pane asks for a name, then shows its path");
+		}
+
+		// --- table, image, binary: the file decides ---
+		folder->activateRowForTest(QStringLiteral("only-left.csv"));
+		QCoreApplication::processEvents();
+		TableCompareView *table = opened(static_cast<TableCompareView *>(nullptr),
+			{ left + QStringLiteral("/only-left.csv"), QString() });
+		check(table != nullptr && table->headerForTest(1)->originalText() == TableCompareView::tr("Untitled Right")
+				&& table->tabTitle().endsWith(TableCompareView::tr("Untitled Right")) && table->diffCount() > 0,
+			"table: a CSV on one side only opens as a table, the other side untitled");
+		folder->activateRowForTest(QStringLiteral("only-left.png"));
+		QCoreApplication::processEvents();
+		ImageCompareView *image = opened(static_cast<ImageCompareView *>(nullptr),
+			{ left + QStringLiteral("/only-left.png"), QString() });
+		check(image != nullptr && image->headerForTest(1)->originalText() == ImageCompareView::tr("Untitled Right")
+				&& image->tabTitle().endsWith(ImageCompareView::tr("Untitled Right")),
+			"image: an image on one side only opens as an image comparison, the other pane untitled");
+		folder->activateRowForTest(QStringLiteral("only-left.bin"));
+		QCoreApplication::processEvents();
+		HexCompareView *hex = opened(static_cast<HexCompareView *>(nullptr),
+			{ left + QStringLiteral("/only-left.bin"), QString() });
+		check(hex != nullptr && hex->tabTitle().endsWith(HexCompareView::tr("Untitled Right"))
+				&& hex->diffCount() != 0,
+			"binary: a binary file on one side only opens as a binary comparison, the other pane untitled");
+
+		// --- 3-way: every side opens, the missing ones untitled ---
+		const QString a = dir.filePath(QStringLiteral("a"));
+		const QString b = dir.filePath(QStringLiteral("b"));
+		const QString c = dir.filePath(QStringLiteral("c"));
+		write(a + QStringLiteral("/only-a.txt"), "a\n");
+		write(a + QStringLiteral("/a-and-c.txt"), "a\n");
+		write(c + QStringLiteral("/a-and-c.txt"), "c\n");
+		QDir().mkpath(b);
+		MainWindow window3;
+		window3.handleIncomingPaths({ a, b, c });
+		auto *folder3 = window3.findChild<FolderCompareView *>();
+		if (folder3 == nullptr)
+			return 1;
+		waitFor(folder3);
+		const auto opened3 = [&window3](const QStringList &paths) {
+			for (FileCompareView *view : window3.findChildren<FileCompareView *>())
+				if (view->paths() == paths)
+					return view;
+			return static_cast<FileCompareView *>(nullptr);
+		};
+		folder3->activateRowForTest(QStringLiteral("only-a.txt"));
+		QCoreApplication::processEvents();
+		FileCompareView *three = opened3({ a + QStringLiteral("/only-a.txt"), QString(), QString() });
+		check(three != nullptr && three->headerForTest(1)->originalText() == FileCompareView::tr("Untitled Middle")
+				&& three->headerForTest(2)->originalText() == FileCompareView::tr("Untitled Right"),
+			"3-way: an item on one side opens all three panes, the others untitled");
+		folder3->activateRowForTest(QStringLiteral("a-and-c.txt"));
+		QCoreApplication::processEvents();
+		check(opened3({ a + QStringLiteral("/a-and-c.txt"), QString(), c + QStringLiteral("/a-and-c.txt") }) != nullptr,
+			"3-way: one on two sides opens three panes too, the missing middle untitled");
+
+		lm::setMessageSinkForTest([](const QString &) {});
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestPathBarsOpt))
+	{
+		// WinMerge's path bar over the panes of the text, table and image
+		// comparisons: the whole path, the active pane, the caption edited
+		// for the bar and the tab, the path edited (Ctrl+L) into
+		// ChangeFile, which asks to save first and opens the files again
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto press = [](QWidget *widget, int key) {
+			QKeyEvent event(QEvent::KeyPress, key, Qt::NoModifier);
+			QApplication::sendEvent(widget, &event);
+		};
+		const auto focusIn = [](QWidget *widget) {
+			QFocusEvent focus(QEvent::FocusIn, Qt::MouseFocusReason);
+			QApplication::sendEvent(widget, &focus);
+		};
+		// type into a bar's editing and press Enter
+		const auto enter = [&press](FilepathEdit *bar, const QString &text) {
+			bar->setText(text);
+			press(bar, Qt::Key_Return);
+			QApplication::processEvents();
+		};
+		const auto editPathAction = [](QWidget *view) -> QAction * {
+			for (QAction *action : view->actions())
+				if (action->shortcuts().contains(QKeySequence(Qt::CTRL | Qt::Key_L))
+					&& action->shortcuts().contains(QKeySequence(Qt::ALT | Qt::Key_D)))
+					return action;
+			return nullptr;
+		};
+		QStringList messages;
+		lm::setMessageSinkForTest([&messages](const QString &text) { messages << text; });
+		NewComparisonView::clearSavedHistory();
+		int prompts = 0;
+		bool promptAnswer = true;
+		const auto prompt = [&]() { ++prompts; return promptAnswer; };
+
+		// --- the text comparison ---
+		{
+			const QString left = dir.filePath(QStringLiteral("left.txt"));
+			const QString right = dir.filePath(QStringLiteral("right.txt"));
+			const QString third = dir.filePath(QStringLiteral("third.txt"));
+			const QString binary = dir.filePath(QStringLiteral("binary.txt"));
+			write(left, "one\ntwo\nthree\n");
+			write(right, "one\nTWO\nthree\n");
+			write(third, "one\ntwo\nthree\n");
+			write(binary, QByteArray("bin\0ary", 7));
+			FileCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ left, right }, &error))
+				return 2;
+			view.setSavePrompt(prompt);
+			int rescans = 0;
+			QObject::connect(&view, &FileCompareView::rescanned, [&rescans]() { ++rescans; });
+			view.resize(900, 500);
+			view.show();
+			QApplication::processEvents();
+			FilepathEdit *bar0 = view.headerForTest(0);
+			FilepathEdit *bar1 = view.headerForTest(1);
+			check(bar0->originalText() == left && bar0->path() == left && bar0->isActive()
+					&& bar1->originalText() == right && !bar1->isActive(),
+				"text: each bar shows its pane's whole path, the active pane's highlighted");
+			focusIn(bar1);
+			check(view.activePaneForTest() == 1 && bar1->isActive() && !bar0->isActive(),
+				"text: a click in a bar makes its pane the active one");
+			bool f2 = false;
+			for (QAction *action : view.actions())
+				f2 = f2 || action->shortcuts().contains(QKeySequence(Qt::Key_F2));
+			QAction *editPath = editPathAction(&view);
+			check(!f2 && editPath != nullptr,
+				"text: F2 belongs to the bar (upstream's accelerator there), Ctrl+L and Alt+D to the view");
+			if (editPath == nullptr)
+				return 1;
+			press(bar1, Qt::Key_F2);
+			enter(bar1, QStringLiteral("Theirs"));
+			check(bar1->originalText() == QStringLiteral("Theirs")
+					&& view.tabTitle().endsWith(QStringLiteral("Theirs")),
+				"text: a caption edited in the bar names the pane and the tab");
+			view.typeAtForTest(0, 0, QStringLiteral("x"));
+			QApplication::processEvents();
+			check(bar0->originalText() == QStringLiteral("* ") + left,
+				"text: a modified pane's bar starts with \"* \"");
+			focusIn(bar0);
+			promptAnswer = false;
+			editPath->trigger();
+			check(bar0->isEditing() && bar0->text() == left, "text: Ctrl+L edits the active pane's path");
+			enter(bar0, third);
+			check(prompts == 1 && view.paths().at(0) == left && view.isModified(),
+				"text: another file asks to save first, and cancelling keeps the pane");
+			promptAnswer = true;
+			messages.clear();
+			editPath->trigger();
+			enter(bar0, binary);
+			check(prompts == 2 && view.paths().at(0) == left && messages.size() == 1,
+				"text: a binary file is refused with the reason");
+			rescans = 0;
+			editPath->trigger();
+			enter(bar0, third);
+			check(prompts == 3 && view.paths().at(0) == third && bar0->originalText() == third
+					&& !view.isModified() && bar1->originalText() == QStringLiteral("Theirs")
+					&& rescans == 1 && view.diffCount() == 1
+					&& NewComparisonView::savedHistory().value(0) == third,
+				"text: the files open again, the new one in its pane, the other caption kept, into the recent paths");
+		}
+
+		// --- the table comparison ---
+		{
+			const QString left = dir.filePath(QStringLiteral("left.csv"));
+			const QString right = dir.filePath(QStringLiteral("right.csv"));
+			const QString third = dir.filePath(QStringLiteral("third.csv"));
+			write(left, "id,name\n1,apple\n2,banana\n");
+			write(right, "id,name\n1,apple\n2,cherry\n");
+			write(third, "id,name\n1,apple\n2,banana\n");
+			TableCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+				return 2;
+			view.setSavePrompt(prompt);
+			view.resize(900, 500);
+			view.show();
+			QApplication::processEvents();
+			FilepathEdit *bar0 = view.headerForTest(0);
+			FilepathEdit *bar1 = view.headerForTest(1);
+			check(bar0->originalText() == left && bar1->originalText() == right
+					&& bar0->isActive() && !bar1->isActive(),
+				"table: a path bar over each side");
+			view.setSideDescription(0, QStringLiteral("Mine"));
+			focusIn(bar1);
+			QAction *editPath = editPathAction(&view);
+			check(bar0->originalText() == QStringLiteral("Mine") && bar1->isActive() && editPath != nullptr,
+				"table: the description in the bar, the focused bar's side the active one");
+			if (editPath == nullptr)
+				return 1;
+			prompts = 0;
+			editPath->trigger();
+			check(bar1->isEditing() && bar1->text() == right, "table: Ctrl+L edits the active side's path");
+			enter(bar1, third);
+			check(prompts == 1 && view.paths() == QStringList{ left, third } && view.diffCount() == 0
+					&& bar1->originalText() == third && bar0->originalText() == QStringLiteral("Mine"),
+				"table: the files open again with the new one on its side");
+		}
+
+		// --- the image comparison ---
+		{
+			QImage red(16, 16, QImage::Format_RGB32);
+			red.fill(Qt::red);
+			QImage blue(16, 16, QImage::Format_RGB32);
+			blue.fill(Qt::blue);
+			const QString left = dir.filePath(QStringLiteral("left.png"));
+			const QString right = dir.filePath(QStringLiteral("right.png"));
+			const QString third = dir.filePath(QStringLiteral("third.png"));
+			red.save(left);
+			blue.save(right);
+			red.save(third);
+			ImageCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ left, right }, &error))
+				return 2;
+			view.setSavePrompt(prompt);
+			view.resize(900, 500);
+			view.show();
+			QApplication::processEvents();
+			FilepathEdit *bar0 = view.headerForTest(0);
+			FilepathEdit *bar1 = view.headerForTest(1);
+			check(bar0->originalText() == left && bar1->originalText() == right && bar0->isActive(),
+				"image: a path bar over each pane");
+			focusIn(bar1);
+			QAction *editPath = editPathAction(&view);
+			check(view.activePaneForTest() == 1 && bar1->isActive() && editPath != nullptr,
+				"image: the focused bar's pane the active one");
+			if (editPath == nullptr)
+				return 1;
+			prompts = 0;
+			editPath->trigger();
+			enter(bar1, third);
+			check(prompts == 1 && view.paths().at(1) == third && view.diffCount() == 0
+					&& bar1->originalText() == third && view.activePaneForTest() == 1,
+				"image: the images open again with the new one, the active pane kept");
+
+			// Open Clipboard takes an image here, and nothing without one
+			QString pick = FilepathEdit::tr("Open C&lipboard");
+			FilepathEdit::setMenuPresenterForTest([&pick](QMenu *menu) {
+				for (QAction *action : menu->actions())
+					if (action->text() == pick)
+						action->trigger();
+			});
+			QGuiApplication::clipboard()->setText(QStringLiteral("no image"));
+			bar0->showMenu(QPoint());
+			const bool keptWithoutImage = view.paths().at(0) == left;
+			QGuiApplication::clipboard()->setImage(blue);
+			bar0->showMenu(QPoint());
+			const QString clipPath = view.paths().at(0);
+			printf("  clipboard: %s as %s\n", qPrintable(bar0->originalText()), qPrintable(clipPath));
+			check(keptWithoutImage && clipPath.endsWith(QStringLiteral(".png"))
+					&& QFileInfo(clipPath).fileName().startsWith(QStringLiteral("CLP"))
+					&& QImage(clipPath).pixelColor(0, 0) == QColor(Qt::blue)
+					&& bar0->originalText().startsWith(FilepathEdit::tr("Clipboard at %1").section(QStringLiteral("%1"), 0, 0))
+					&& view.diffCount() > 0,
+				"image: Open Clipboard opens the clipboard's image as a PNG file, and nothing without one");
+			FilepathEdit::setMenuPresenterForTest(nullptr);
+		}
+
+		NewComparisonView::clearSavedHistory();
+		lm::setMessageSinkForTest([](const QString &) {});
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestHexHeaderOpt))
+	{
+		// WinMerge's path bar over each pane of a binary comparison
+		// (CFilepathEdit with CEditorFilePathBar): the path cut to fit, its
+		// menu, the caption and the path edited in the bar, and the files
+		// it opens in the pane (Open, the clipboard, a recent one)
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto press = [](QWidget *widget, int key, Qt::KeyboardModifiers mods = Qt::NoModifier,
+			const QString &text = QString()) {
+			QKeyEvent event(QEvent::KeyPress, key, mods, text);
+			QApplication::sendEvent(widget, &event);
+		};
+		QStringList messages;
+		lm::setMessageSinkForTest([&messages](const QString &text) { messages << text; });
+		NewComparisonView::clearSavedHistory();
+
+		// --- the path cut to fit, and the tooltip's lines ---
+		const QFontMetrics metrics(QApplication::font());
+		const QString deep = QStringLiteral("/aaaa/bbbb/cccc/file.bin");
+		const QString cut = FilepathEdit::compactPath(deep, metrics,
+			metrics.horizontalAdvance(QStringLiteral("/...c/file.bin")));
+		printf("  cut: %s\n", qPrintable(cut));
+		check(cut == QStringLiteral("/...c/file.bin")
+				&& FilepathEdit::compactPath(deep, metrics, 10000) == deep,
+			"the path cut in the middle: the first and last parts, the rest from the right");
+		const QString lines = FilepathEdit::wrapPath(QStringLiteral("/aaaa/bbbb/cccc"), metrics,
+			metrics.horizontalAdvance(QStringLiteral("/aaaa/bbbb/c")));
+		check(lines == QStringLiteral("/aaaa/bbbb/\ncccc"),
+			"the tooltip's lines broken after the last separator that fits");
+
+		const QString left = dir.filePath(QStringLiteral("left.bin"));
+		const QString right = dir.filePath(QStringLiteral("right.bin"));
+		const QString third = dir.filePath(QStringLiteral("third.bin"));
+		const QString fourth = dir.filePath(QStringLiteral("fourth.bin"));
+		write(left, QByteArray("left bytes"));
+		write(right, QByteArray("right bytes"));
+		write(third, QByteArray("third bytes"));
+		write(fourth, QByteArray("fourth bytes"));
+		HexCompareView view;
+		QString error;
+		if (!view.compare(QStringList{ left, right }, &error))
+			return 2;
+		int prompts = 0;
+		bool promptAnswer = true;
+		view.setSavePrompt([&]() { ++prompts; return promptAnswer; });
+		view.resize(1000, 600);
+		view.show();
+		QApplication::processEvents();
+		FilepathEdit *const bar = view.headerForTest(0);
+		check(bar->originalText() == left && bar->path() == left && bar->isActive()
+				&& !view.headerForTest(1)->isActive()
+				&& view.headerForTest(1)->originalText() == right,
+			"each bar shows its pane's whole path, the active pane's bar highlighted");
+
+		// --- the menu, from the lines at the right end ---
+		QStringList items;
+		QList<bool> enabled;
+		QStringList recentItems;
+		QString pick;
+		FilepathEdit::setMenuPresenterForTest([&](QMenu *menu) {
+			items.clear();
+			enabled.clear();
+			recentItems.clear();
+			QMenu *recentMenu = nullptr;
+			for (QAction *action : menu->actions())
+			{
+				items << (action->isSeparator() ? QStringLiteral("-") : action->text());
+				enabled << action->isEnabled();
+				if (action->menu() != nullptr)
+					recentMenu = action->menu();
+			}
+			if (recentMenu != nullptr)
+				for (QAction *action : recentMenu->actions())
+					recentItems << action->text();
+			const auto pickFrom = [&pick](QMenu *from) {
+				for (QAction *action : from->actions())
+				{
+					if (!pick.isEmpty() && action->text() == pick)
+					{
+						action->trigger();
+						return true;
+					}
+				}
+				return false;
+			};
+			if (!pickFrom(menu) && recentMenu != nullptr)
+				pickFrom(recentMenu);
+		});
+		bar->setRecentItemsProvider([]() { return QStringList(); });
+		{
+			const QPoint lines = bar->menuRectForTest().center();
+			QMouseEvent click(QEvent::MouseButtonPress, QPointF(lines), QPointF(bar->mapToGlobal(lines)),
+				Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+			QApplication::sendEvent(bar, &click);
+		}
+		printf("  menu: %s\n", qPrintable(items.join(QStringLiteral(" | "))));
+		check(items == QStringList{ FilepathEdit::tr("Copy"), FilepathEdit::tr("&Copy Full Path"),
+				FilepathEdit::tr("Copy &Filename"), FilepathEdit::tr("&Edit Caption"), QStringLiteral("-"),
+				FilepathEdit::tr("Edit &Path"), FilepathEdit::tr("Open C&lipboard"),
+				FilepathEdit::tr("&Open\xE2\x80\xA6") }
+				&& !enabled.at(0) && enabled.at(1) && enabled.at(2) && enabled.at(5),
+			"the lines open the menu: Copy (greyed without a selection), the copies, the caption, the path, the clipboard, Open");
+		pick = FilepathEdit::tr("&Copy Full Path");
+		bar->showMenu(QPoint());
+		const QString fullPath = QGuiApplication::clipboard()->text();
+		pick = FilepathEdit::tr("Copy &Filename");
+		bar->showMenu(QPoint());
+		check(fullPath == left && QGuiApplication::clipboard()->text() == QStringLiteral("left.bin"),
+			"Copy Full Path and Copy Filename");
+		bar->setSelection(1, 5);
+		pick = FilepathEdit::tr("Copy");
+		bar->showMenu(QPoint());
+		check(enabled.at(0) && QGuiApplication::clipboard()->text() == bar->text().mid(1, 5),
+			"Copy: the text selected in the bar");
+		bar->deselect();
+		press(bar, Qt::Key_C, QKeySequence(QKeySequence::Copy)[0].keyboardModifiers());
+		check(QGuiApplication::clipboard()->text() == bar->text(),
+			"its Copy key without a selection copies the whole text shown");
+		pick.clear();
+		{
+			QContextMenuEvent menuEvent(QContextMenuEvent::Mouse, QPoint(20, 5), bar->mapToGlobal(QPoint(20, 5)));
+			items.clear();
+			QApplication::sendEvent(bar, &menuEvent);
+		}
+		check(items.size() == 8, "a right click opens the same menu");
+
+		// a modified pane's "* " is not part of the path copied
+		view.paneForTest(0)->replaceBytes(0, 1, QByteArray("L"));
+		QApplication::processEvents();
+		pick = FilepathEdit::tr("&Copy Full Path");
+		bar->showMenu(QPoint());
+		check(bar->originalText() == QStringLiteral("* ") + left
+				&& QGuiApplication::clipboard()->text() == left,
+			"a modified pane's bar starts with \"* \", which Copy Full Path leaves out");
+
+		// --- the caption, edited in the bar ---
+		bar->editCaption();
+		check(bar->isEditing() && !bar->isReadOnly() && bar->text() == left,
+			"Edit Caption: the bar turns editable with the caption, without the \"* \"");
+		bar->setText(QStringLiteral("zzz"));
+		press(bar, Qt::Key_Escape);
+		QApplication::processEvents();
+		check(!bar->isEditing() && bar->isReadOnly() && bar->originalText() == QStringLiteral("* ") + left,
+			"Esc leaves the caption as it was");
+		press(bar, Qt::Key_F2);
+		check(bar->isEditing(), "F2 in the bar edits the caption");
+		bar->setText(QStringLiteral("Version A"));
+		press(bar, Qt::Key_Return);
+		QApplication::processEvents();
+		check(!bar->isEditing() && bar->originalText() == QStringLiteral("* Version A")
+				&& view.tabTitle().startsWith(QStringLiteral("Version A")),
+			"Enter takes the new caption, for the bar and the tab");
+
+		// --- the path, edited in the bar (Ctrl+L or Alt+D) ---
+		QAction *editPathAction = nullptr;
+		for (QAction *action : view.actions())
+			if (action->shortcuts().contains(QKeySequence(Qt::CTRL | Qt::Key_L)))
+				editPathAction = action;
+		check(editPathAction != nullptr
+				&& editPathAction->shortcuts().contains(QKeySequence(Qt::ALT | Qt::Key_D)),
+			"Ctrl+L and Alt+D edit the active pane's path");
+		if (editPathAction == nullptr)
+			return 1;
+		editPathAction->trigger();
+		check(bar->isEditing() && bar->text() == left && bar->completer() != nullptr,
+			"Edit Path: the bar turns editable with the path, completing from the file system");
+		const QString missing = dir.filePath(QStringLiteral("missing.bin"));
+		bar->setText(missing);
+		press(bar, Qt::Key_Return);
+		QApplication::processEvents();
+		printf("  missing: %s\n", qPrintable(bar->text()));
+		check(!bar->isEditing() && bar->completer() == nullptr && view.paths().at(0) == left
+				&& bar->text() != missing && !bar->text().isEmpty() && prompts == 0,
+			"a path that is not there: the reason in the bar, the pane as it was");
+		editPathAction->trigger();
+		bar->setText(dir.path());
+		press(bar, Qt::Key_Return);
+		QApplication::processEvents();
+		check(bar->text() == FilepathEdit::tr("File not found: %1").arg(dir.path()) && view.paths().at(0) == left,
+			"a folder: \"File not found\" in the bar");
+		promptAnswer = false;
+		editPathAction->trigger();
+		bar->setText(third);
+		press(bar, Qt::Key_Return);
+		QApplication::processEvents();
+		check(prompts == 1 && view.paths().at(0) == left && view.paneForTest(0)->isModified(),
+			"a file: the changes are saved first, and cancelling that keeps the pane");
+		promptAnswer = true;
+		editPathAction->trigger();
+		bar->setText(third);
+		press(bar, Qt::Key_Return);
+		QApplication::processEvents();
+		check(prompts == 2 && view.paths().at(0) == third
+				&& view.paneForTest(0)->data() == QByteArray("third bytes")
+				&& !view.paneForTest(0)->isModified() && bar->originalText() == third
+				&& NewComparisonView::savedHistory().value(0) == third,
+			"then the file loads in the pane, without the caption, into the recent paths");
+
+		// --- Open... ---
+		QString startFolder;
+		FilepathEdit::setOpenDialogForTest([&](const QString &folder) {
+			startFolder = folder;
+			return fourth;
+		});
+		pick = FilepathEdit::tr("&Open\xE2\x80\xA6");
+		bar->showMenu(QPoint());
+		check(startFolder == dir.path() && view.paths().at(0) == fourth
+				&& view.paneForTest(0)->data() == QByteArray("fourth bytes")
+				&& NewComparisonView::savedHistory().value(0) == fourth,
+			"Open: from the caption's folder, the file chosen in the pane");
+		FilepathEdit::setOpenDialogForTest(nullptr);
+
+		// --- Open Clipboard ---
+		QGuiApplication::clipboard()->setText(QStringLiteral("clipboard bytes"));
+		pick = FilepathEdit::tr("Open C&lipboard");
+		bar->showMenu(QPoint());
+		const QString clipPath = view.paths().at(0);
+		printf("  clipboard: %s as %s\n", qPrintable(bar->originalText()), qPrintable(clipPath));
+		check(view.paneForTest(0)->data() == QByteArray("clipboard bytes")
+				&& QFileInfo(clipPath).fileName().startsWith(QStringLiteral("CLP"))
+				&& QFileInfo::exists(clipPath)
+				&& bar->originalText().startsWith(FilepathEdit::tr("Clipboard at %1").section(QStringLiteral("%1"), 0, 0))
+				&& bar->path() == clipPath && view.tabTitle().startsWith(FilepathEdit::tr("Clipboard at %1").section(QStringLiteral("%1"), 0, 0))
+				&& NewComparisonView::savedHistory().value(0) == fourth,
+			"Open Clipboard: its text in a temporary file, captioned with the time, not a recent path");
+
+		// --- Recent Files or Folders ---
+		bar->setRecentItemsProvider([&]() { return QStringList{ missing, right }; });
+		pick.clear();
+		bar->showMenu(QPoint());
+		check(items.size() == 10 && items.at(8) == QStringLiteral("-")
+				&& items.at(9) == FilepathEdit::tr("Recent F&iles or Folders")
+				&& recentItems == QStringList{ QStringLiteral("&1 missing.bin"), QStringLiteral("&2 right.bin") },
+			"the recent files, by name, after a separator");
+		pick = QStringLiteral("&1 missing.bin");
+		bar->showMenu(QPoint());
+		view.paneForTest(0)->placeCaret(2);
+		QApplication::processEvents();
+		check(bar->originalText() == FilepathEdit::tr("File not found: %1").arg(missing)
+				&& view.paths().at(0) == clipPath,
+			"one not found: said in the bar, which keeps it while the pane is as it was");
+		pick = QStringLiteral("&2 right.bin");
+		bar->showMenu(QPoint());
+		check(view.paths().at(0) == right && bar->originalText() == right
+				&& view.paneForTest(0)->data() == QByteArray("right bytes") && view.diffCount() == 0,
+			"one there: loaded in the pane, compared again");
+
+		// --- the active pane follows the bar's focus ---
+		{
+			QFocusEvent focus(QEvent::FocusIn, Qt::MouseFocusReason);
+			QApplication::sendEvent(view.headerForTest(1), &focus);
+		}
+		check(view.activePane() == 1 && view.headerForTest(1)->isActive() && !bar->isActive(),
+			"a click in a bar makes its pane the active one");
+
+		FilepathEdit::setMenuPresenterForTest(nullptr);
+		NewComparisonView::clearSavedHistory();
+		lm::setMessageSinkForTest([](const QString &) {});
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestHexOpt))
+	{
+		// WinMerge's binary comparison: two or three files as hex dumps,
+		// the bytes compared at the same offsets, the runs of differing
+		// bytes stepped through and copied, Frhed's editing, one undo
+		// history for the panes, and the files that open it
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::ReadOnly))
+				std::exit(2);
+			return f.readAll();
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		const auto press = [](QWidget *widget, int key, Qt::KeyboardModifiers mods = Qt::NoModifier,
+			const QString &text = QString()) {
+			QKeyEvent event(QEvent::KeyPress, key, mods, text);
+			QApplication::sendEvent(widget, &event);
+		};
+		const auto type = [&press](QWidget *widget, const QString &text) {
+			for (const QChar ch : text)
+				press(widget, 0, Qt::NoModifier, QString(ch));
+		};
+		// 64 bytes 0..63; the right side differs at 10..12 and 40 and has
+		// four more
+		QByteArray leftBytes;
+		for (int i = 0; i < 64; ++i)
+			leftBytes.append(static_cast<char>(i));
+		QByteArray rightBytes = leftBytes;
+		for (int i = 10; i <= 12; ++i)
+			rightBytes[i] = static_cast<char>(~rightBytes.at(i));
+		rightBytes[40] = 'X';
+		rightBytes.append("TAIL");
+		const QString left = dir.filePath(QStringLiteral("left.dat"));
+		const QString right = dir.filePath(QStringLiteral("right.dat"));
+		write(left, leftBytes);
+		write(right, rightBytes);
+
+		{
+			HexCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ left, right }, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			view.resize(1000, 600);
+			view.show();
+			settle();
+			HexView *const l = view.paneForTest(0);
+			HexView *const r = view.paneForTest(1);
+			check(view.diffCount() != 0 && !view.isModified() && l->length() == 64 && r->length() == 68,
+				"open: two files, different, unmodified");
+
+			// --- the dump ---
+			const int bpl = l->bytesPerLine();
+			const QString first = l->lineTextForTest(0);
+			printf("  %d bytes per line, the first line: \"%s\"\n", bpl, qPrintable(first));
+			check(bpl >= 4 && l->offsetLength() == 2
+					&& first.startsWith(QStringLiteral("00  00 01 02 03"))
+					&& first.endsWith(QStringLiteral("  ....")) == (bpl == 4),
+				"the line: the offset in as many hex digits as the size takes, two spaces, the bytes");
+			const int endLine = static_cast<int>(64 / bpl);
+			check(l->lineTextForTest(endLine).contains(QStringLiteral("__")),
+				"the end of the data is marked __");
+			check(l->isDiff(10) && l->isDiff(12) && !l->isDiff(13) && l->isDiff(40) && !l->isDiff(63)
+					&& r->isDiff(64) && r->isDiff(67) && !r->isDiff(68),
+				"a byte differs from the other pane's at its offset, or where the other has none");
+
+			// --- the differences ---
+			view.gotoFirstDiff();
+			check(l->hasSelection() && l->selectionLower() == 10 && l->selectionUpper() == 12
+					&& r->hasSelection() && r->selectionLower() == 10 && r->selectionUpper() == 12,
+				"First Difference selects the first run of differing bytes, in both panes");
+			view.gotoNextDiff();
+			check(l->selectionLower() == 40 && l->selectionUpper() == 40, "Next Difference: the next run");
+			view.gotoNextDiff();
+			check(l->selectionLower() == 40,
+				"no difference past the length the panes share (the right side's extra bytes are none)");
+			view.gotoPrevDiff();
+			check(l->selectionLower() == 10 && l->selectionUpper() == 12, "Previous Difference");
+			view.gotoLastDiff();
+			check(l->selectionLower() == 40, "Last Difference");
+
+			// --- copying the selection, and undo across the panes ---
+			view.gotoFirstDiff();
+			l->setFocus();
+			settle();
+			view.copyToRight();
+			check(r->data().mid(10, 3) == leftBytes.mid(10, 3) && r->isModified() && !l->isModified()
+					&& view.isModified() && view.canUndo(),
+				"Copy to Right copies the selected bytes into the right pane");
+			view.undo();
+			check(r->data() == rightBytes && !r->isModified() && view.canRedo(),
+				"Undo takes the copy back");
+			view.redo();
+			check(r->data().mid(10, 3) == leftBytes.mid(10, 3), "Redo copies again");
+			view.undo();
+
+			// --- Copy All asks first ---
+			QStringList asked;
+			bool answer = false;
+			lm::setQuestionSinkForTest([&](const QString &text, bool *) {
+				asked << text;
+				return answer;
+			});
+			view.copyAllToRight();
+			check(asked.size() == 1 && r->data() == rightBytes,
+				"Copy All to Right asks \"Copy all differences to other file?\"; No leaves the pane");
+			answer = true;
+			view.copyAllToRight();
+			check(r->data() == leftBytes + QByteArray("TAIL"),
+				"Yes copies every byte over (upstream's copy_all_from leaves the longer side's tail)");
+			lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+			view.undo();
+
+			// --- the keyboard ---
+			l->setFocus();
+			settle();
+			press(l, Qt::Key_Home, Qt::ControlModifier);
+			check(!l->hasSelection() && l->caretByte() == 0 && l->caretNibble() == 0,
+				"Ctrl+Home: the caret at the first byte, on its high nibble");
+			press(l, Qt::Key_Right);
+			check(l->caretByte() == 0 && l->caretNibble() == 1, "Right steps a nibble in the hex column");
+			press(l, Qt::Key_Right);
+			check(l->caretByte() == 1 && l->caretNibble() == 0, "and then onto the next byte");
+			press(l, Qt::Key_Left);
+			check(l->caretByte() == 0 && l->caretNibble() == 1, "Left steps back a nibble");
+			press(l, Qt::Key_Down);
+			check(l->caretByte() == bpl, "Down: a line");
+			press(l, Qt::Key_End, Qt::ControlModifier);
+			check(l->caretByte() == 64, "Ctrl+End: past the last byte, where a byte can be added");
+			press(l, Qt::Key_Home, Qt::ControlModifier);
+			press(l, Qt::Key_Right, Qt::ShiftModifier);
+			press(l, Qt::Key_Right, Qt::ShiftModifier);
+			check(l->hasSelection() && l->selectionLower() == 0 && l->selectionUpper() == 2,
+				"Shift with the arrows selects");
+			press(l, Qt::Key_Escape);
+			check(!l->hasSelection() && l->caretByte() == 0, "Escape leaves the caret at the selection's start");
+
+			// --- the mouse ---
+			const auto click = [&settle](HexView *pane, const QPoint &at, Qt::KeyboardModifiers mods = {}) {
+				const QPointF point(at);
+				QMouseEvent press(QEvent::MouseButtonPress, point, pane->viewport()->mapToGlobal(point),
+					Qt::LeftButton, Qt::LeftButton, mods);
+				QApplication::sendEvent(pane->viewport(), &press);
+				QMouseEvent release(QEvent::MouseButtonRelease, point, pane->viewport()->mapToGlobal(point),
+					Qt::LeftButton, Qt::NoButton, mods);
+				QApplication::sendEvent(pane->viewport(), &release);
+				settle();
+			};
+			click(l, l->pointForTest(2, 1, false));
+			check(!l->hasSelection() && l->caretByte() == 2 && l->caretNibble() == 1
+					&& l->area() == HexView::Area::Bytes,
+				"a click puts the caret on the nibble clicked");
+			click(l, l->pointForTest(5, 0, true));
+			check(l->caretByte() == 5 && l->area() == HexView::Area::Chars,
+				"a click in the text column, on the character");
+			click(l, l->pointForTest(9, 0, false), Qt::ShiftModifier);
+			check(l->hasSelection() && l->selectionLower() == 5 && l->selectionUpper() == 9,
+				"Shift with a click selects from the caret");
+			click(l, l->pointForTest(11, 0, false));
+			check(!l->hasSelection() && l->caretByte() == 11, "a click leaves no selection");
+			// within a difference with nothing selected, Next selects it
+			// from the caret's own byte (upstream's iGetEndOfSelection)
+			l->placeCaret(11);
+			view.gotoNextDiff();
+			check(l->selectionLower() == 11 && l->selectionUpper() == 12,
+				"Next Difference from a caret inside one: the rest of it");
+			l->placeCaret(0);
+
+			// --- typing ---
+			type(l, QStringLiteral("ab"));
+			check(static_cast<unsigned char>(l->data().at(0)) == 0xab && l->caretByte() == 1
+					&& l->caretNibble() == 0 && l->length() == 64 && l->isModified(),
+				"hex digits overwrite the byte, nibble by nibble");
+			type(l, QStringLiteral("g"));
+			check(static_cast<unsigned char>(l->data().at(1)) == 1, "a key that is no hex digit types nothing");
+			press(l, Qt::Key_Tab);
+			check(l->area() == HexView::Area::Chars, "Tab: the text column");
+			type(l, QStringLiteral("Z"));
+			check(l->data().at(1) == 'Z' && l->caretByte() == 2, "a character overwrites its byte");
+			press(l, Qt::Key_Insert);
+			check(l->insertMode(), "Insert: insert mode");
+			type(l, QStringLiteral("Q"));
+			check(l->length() == 65 && l->data().at(2) == 'Q' && l->data().at(3) == 2,
+				"in insert mode a character comes in before the caret's byte");
+			press(l, Qt::Key_Backspace);
+			check(l->length() == 64 && l->data().at(2) == 2 && l->caretByte() == 2,
+				"Backspace in insert mode takes the byte before the caret");
+			press(l, Qt::Key_Insert);
+			press(l, Qt::Key_Tab);
+			const QString status = view.statusTextForTest(0);
+			printf("  status: %s\n", qPrintable(status));
+			check(status.contains(QStringLiteral("0x2")) && status.contains(QStringLiteral("00000010"))
+					&& status.contains(QStringLiteral("ANSI")) && status.contains(QStringLiteral(": 64")),
+				"the status bar: the offset, the bits, the values, the mode and the size");
+
+			// one history for both panes: the last edit goes first
+			view.gotoFirstDiff();
+			view.copyToRight();
+			view.undo();
+			check(r->data() == rightBytes && l->data().at(1) == 'Z',
+				"Undo takes back the last edit, in whichever pane it was");
+			int steps = 0;
+			while (view.canUndo() && steps < 20)
+			{
+				view.undo();
+				++steps;
+			}
+			check(steps == 5 && l->data() == leftBytes && !l->isModified(),
+				"each byte typed is a step of its own, back to the file as loaded");
+
+			// --- read-only ---
+			view.setReadOnlySides({ false, true });
+			r->setFocus();
+			type(r, QStringLiteral("ff"));
+			view.gotoFirstDiff();
+			l->setFocus();
+			view.copyToRight();
+			check(r->data() == rightBytes && view.statusTextForTest(1).contains(HexView::tr("READ")),
+				"a read-only pane takes neither typing nor copies");
+			view.setReadOnlySides({ false, false });
+
+			// --- saving ---
+			l->setFocus();
+			press(l, Qt::Key_Home, Qt::ControlModifier);
+			type(l, QStringLiteral("ee"));
+			if (!view.saveModified(&error))
+				printf("save failed: %s\n", qPrintable(error));
+			const QByteArray saved = read(left);
+			check(static_cast<unsigned char>(saved.at(0)) == 0xee && saved.size() == 64
+					&& read(left + QStringLiteral(".bak")) == leftBytes && !view.isModified(),
+				"Save writes the bytes, after a backup of the file");
+
+			// --- identical ---
+			answer = true;
+			lm::setQuestionSinkForTest([](const QString &, bool *) { return true; });
+			r->setFocus();
+			view.copyAllToLeft();
+			lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+			check(l->data() == r->data(), "Copy All to Left");
+			view.refreshByUser();
+			check(view.diffCount() == 0, "Recompare: the panes hold the same bytes");
+		}
+
+		// --- three files: the middle pane against both ---
+		{
+			QByteArray middleBytes = leftBytes;
+			middleBytes[5] = 'M';
+			QByteArray thirdBytes = leftBytes;
+			thirdBytes[20] = 'R';
+			const QString middle = dir.filePath(QStringLiteral("middle.dat"));
+			const QString third = dir.filePath(QStringLiteral("third.dat"));
+			write(left, leftBytes);
+			write(middle, middleBytes);
+			write(third, thirdBytes);
+			HexCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ left, middle, third }, &error))
+				return 2;
+			HexView *const m = view.paneForTest(1);
+			check(m->isDiff(5) && m->isDiff(20) && !view.paneForTest(0)->isDiff(20)
+					&& view.paneForTest(0)->isDiff(5) && view.paneForTest(2)->isDiff(20),
+				"3-way: the middle differs where either side does, a side where the middle does");
+		}
+
+		// --- every comparison asks before Copy All, as WinMerge's ---
+		{
+			const QString question = QCoreApplication::translate("MessageBoxes",
+				"Copy all differences to other file?");
+			QStringList asked;
+			lm::setQuestionSinkForTest([&asked](const QString &text, bool *) {
+				asked << text;
+				return false;
+			});
+			const QString t1 = dir.filePath(QStringLiteral("t1.txt"));
+			const QString t2 = dir.filePath(QStringLiteral("t2.txt"));
+			write(t1, "one\ntwo\n");
+			write(t2, "one\nTWO\n");
+			const QString c1 = dir.filePath(QStringLiteral("c1.csv"));
+			const QString c2 = dir.filePath(QStringLiteral("c2.csv"));
+			write(c1, "a,b\n1,2\n");
+			write(c2, "a,b\n1,3\n");
+			const QString i1 = dir.filePath(QStringLiteral("i1.png"));
+			const QString i2 = dir.filePath(QStringLiteral("i2.png"));
+			QImage white(8, 8, QImage::Format_RGB32);
+			white.fill(Qt::white);
+			white.save(i1);
+			QImage red(8, 8, QImage::Format_RGB32);
+			red.fill(Qt::red);
+			red.save(i2);
+			FileCompareView text;
+			TableCompareView table;
+			ImageCompareView image;
+			QString error;
+			if (!text.compare(QStringList{ t1, t2 }, &error) || !table.compare(c1, c2, &error)
+				|| !image.compare(QStringList{ i1, i2 }, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			text.copyAllToRight();
+			table.copyAllToRight();
+			image.copyAllToRight();
+			check(asked == QStringList{ question, question, question } && text.diffCount() == 1
+					&& table.diffCount() == 1 && image.diffCount() > 0,
+				"text, table and image ask \"Copy all differences to other file?\"; No copies nothing");
+			lm::setQuestionSinkForTest([&asked](const QString &text, bool *dontAsk) {
+				asked << text;
+				*dontAsk = true;
+				return true;
+			});
+			text.copyAllToRight();
+			text.recompare();
+			lm::setQuestionSinkForTest([&asked](const QString &text, bool *) {
+				asked << text;
+				return false;
+			});
+			table.copyAllToLeft();
+			check(asked.size() == 4 && text.diffCount() == 0 && table.diffCount() == 0,
+				"Yes copies, and with \"Don't ask this question again\" the answer is kept");
+			lm::setRememberedAnswer(QStringLiteral("ConfirmCopyAllDiffs"), lm::NoAnswer);
+			lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+		}
+
+		// --- what opens it ---
+		{
+			const QString textBin = dir.filePath(QStringLiteral("a.bin"));
+			const QString textBin2 = dir.filePath(QStringLiteral("b.bin"));
+			write(textBin, "plain text\n");
+			write(textBin2, "plain text 2\n");
+			const QString text1 = dir.filePath(QStringLiteral("a.txt"));
+			const QString text2 = dir.filePath(QStringLiteral("b.txt"));
+			write(text1, "one\n");
+			write(text2, "two\n");
+			write(left, leftBytes);
+			write(right, rightBytes);
+			MainWindow window;
+			const auto opens = [&window](const QStringList &paths) {
+				window.openFileComparison(paths);
+				QTabWidget *tabs = window.findChild<QTabWidget *>();
+				return tabs != nullptr ? tabs->currentWidget() : nullptr;
+			};
+			check(qobject_cast<HexCompareView *>(opens({ left, right })) != nullptr,
+				"binary content opens the binary comparison");
+			check(qobject_cast<HexCompareView *>(opens({ textBin, textBin2 })) != nullptr,
+				"so do the binary file patterns (*.bin;*.frx), whatever the content");
+			check(qobject_cast<FileCompareView *>(opens({ text1, text2 })) != nullptr,
+				"text files still open the text comparison");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestDiffFromCursorOpt))
+	{
+		// WinMerge's Next and Previous Difference go from the cursor when
+		// no difference is current or the current one is out of sight, a
+		// click outside the current difference leaves none current, and
+		// the copy commands then take the difference the cursor is in
+		// (issue #10): MergeDesk went from the current difference, and
+		// copied the first difference of the file when none was current.
+		// The text and the table views alike.
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		// a left click, pressed and released, at a point of the widget
+		const auto click = [&settle](QWidget *widget, const QPoint &at)
+		{
+			const QPointF point(at);
+			QMouseEvent press(QEvent::MouseButtonPress, point, widget->mapToGlobal(point),
+				Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+			QApplication::sendEvent(widget, &press);
+			QMouseEvent release(QEvent::MouseButtonRelease, point, widget->mapToGlobal(point),
+				Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+			QApplication::sendEvent(widget, &release);
+			settle();
+		};
+		// 400 lines, every 60th different on the right: differences 0 to 5
+		// at lines 60, 120, 180, 240, 300 and 360; the tables have a
+		// header row above the same rows
+		QByteArray leftText, rightText;
+		QByteArray leftCsv = "id,value\n", rightCsv = "id,value\n";
+		for (int i = 1; i <= 400; ++i)
+		{
+			const QByteArray number = QByteArray::number(i);
+			leftText += "line " + number + " of the text\n";
+			rightText += i % 60 == 0 ? "line " + number + " CHANGED\n"
+				: "line " + number + " of the text\n";
+			leftCsv += number + ",same\n";
+			rightCsv += number + (i % 60 == 0 ? ",changed\n" : ",same\n");
+		}
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		const QString leftTable = dir.filePath(QStringLiteral("left.csv"));
+		const QString rightTable = dir.filePath(QStringLiteral("right.csv"));
+		write(left, leftText);
+		write(right, rightText);
+		write(leftTable, leftCsv);
+		write(rightTable, rightCsv);
+
+		// --- the text view ---
+		{
+			FileCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ left, right }, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			view.resize(1000, 640);
+			view.show();
+			settle();
+			DiffTextEdit *const pane = view.paneForTest(0);
+			// line n of the file is view line n - 1
+			const auto clickLine = [&](int line)
+			{
+				const QTextCursor at(pane->document()->findBlockByNumber(line - 1));
+				click(pane->viewport(), pane->cursorRect(at).center());
+			};
+			// the panes scrolled to show the line at the top, the current
+			// difference left where it is
+			const auto scrollTo = [&](int line)
+			{
+				pane->verticalScrollBar()->setValue(line - 1);
+				settle();
+			};
+			const auto cursorLine = [&]() { return pane->textCursor().blockNumber() + 1; };
+
+			view.gotoFirstDiff();
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 1,
+				"the current difference on screen: Next goes to the one after it");
+			view.gotoPrevDiff();
+			check(view.currentDiffForTest() == 0, "and Previous to the one before it");
+
+			// the issue's steps: scroll, click by the difference wanted,
+			// then Next or Previous
+			scrollTo(230);
+			clickLine(250);
+			check(view.currentDiffForTest() == -1 && cursorLine() == 250,
+				"a click outside the current difference leaves none current");
+			view.gotoNextDiff();
+			printf("  Next from line 250 went to difference %d\n", view.currentDiffForTest());
+			check(view.currentDiffForTest() == 4, "Next goes to the first difference below the cursor");
+			scrollTo(230);
+			clickLine(250);
+			view.gotoPrevDiff();
+			printf("  Previous from line 250 went to difference %d\n", view.currentDiffForTest());
+			check(view.currentDiffForTest() == 3, "Previous goes to the first difference above the cursor");
+
+			// the current difference out of sight, the cursor moved by
+			// keyboard (no click): Next and Previous go from the cursor too
+			view.gotoFirstDiff();
+			pane->setTextCursor(QTextCursor(pane->document()->findBlockByNumber(249)));
+			scrollTo(230);
+			check(view.currentDiffForTest() == 0, "the cursor moved by keyboard: the difference stays current");
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 4,
+				"the current difference out of sight: Next goes from the cursor");
+			view.gotoFirstDiff();
+			pane->setTextCursor(QTextCursor(pane->document()->findBlockByNumber(249)));
+			scrollTo(230);
+			view.gotoPrevDiff();
+			check(view.currentDiffForTest() == 3,
+				"the current difference out of sight: Previous goes from the cursor");
+
+			// a click inside the current difference keeps it
+			view.gotoFirstDiff();
+			view.gotoNextDiff();
+			view.gotoNextDiff();
+			clickLine(180);
+			check(view.currentDiffForTest() == 2, "a click inside the current difference keeps it current");
+
+			// the copy commands with none current: the difference the
+			// cursor is in, and nothing when it is in none
+			view.gotoFirstDiff();
+			scrollTo(160);
+			clickLine(180);
+			check(view.currentDiffForTest() == -1, "a click in another difference leaves none current");
+			view.copyToRight();
+			QStringList rightLines = view.realLinesForTest(1);
+			check(rightLines.value(179) == QStringLiteral("line 180 of the text")
+					&& rightLines.value(59) == QStringLiteral("line 60 CHANGED"),
+				"Copy to Right takes the difference the cursor is in, not the first one");
+			scrollTo(230);
+			clickLine(250);
+			view.copyToRight();
+			check(view.realLinesForTest(1) == rightLines,
+				"Copy to Right with the cursor in no difference copies nothing");
+		}
+
+		// --- the table view ---
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(leftTable, rightTable, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			view.resize(1000, 640);
+			view.show();
+			settle();
+			QList<QTableView *> grids = view.findChildren<QTableView *>();
+			std::sort(grids.begin(), grids.end(), [&view](QTableView *a, QTableView *b) {
+				return a->mapTo(&view, QPoint()).x() < b->mapTo(&view, QPoint()).x();
+			});
+			if (grids.size() < 2)
+				return 2;
+			QTableView *const grid = grids.first();
+			// data row n is model row n - 1 (the header row is not a row)
+			const auto clickRow = [&](int row)
+			{
+				const QModelIndex index = grid->model()->index(row - 1, 0);
+				grid->scrollTo(index, QAbstractItemView::PositionAtCenter);
+				settle();
+				click(grid->viewport(), grid->visualRect(index).center());
+			};
+			const auto rowOfDiff = [&](int diff) {
+				const QList<int> rows = view.diffRowsForTest();
+				return rows.value(diff, -1);
+			};
+
+			view.gotoFirstDiff();
+			check(view.currentDiffForTest() == 0 && grid->currentIndex().row() == 59,
+				"table: the cursor at the start of the difference gone to");
+			clickRow(250);
+			check(view.currentDiffForTest() == -1, "table: a click outside the current difference leaves none current");
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 4, "table: Next goes to the first difference below the cursor");
+			clickRow(250);
+			view.gotoPrevDiff();
+			check(view.currentDiffForTest() == 3, "table: Previous goes to the first difference above the cursor");
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 4,
+				"table: the current difference on screen: Next goes to the one after it");
+
+			view.gotoFirstDiff();
+			clickRow(180);
+			check(view.currentDiffForTest() == -1, "table: a click in another difference leaves none current");
+			view.copyCurrentDiff(0);
+			printf("  table differences after the copy: %d, the first at row %d\n", view.diffCount(),
+				rowOfDiff(0));
+			check(view.diffCount() == 5 && !view.diffRowsForTest().contains(180)
+					&& view.diffRowsForTest().contains(60),
+				"table: Copy to Right takes the difference the cursor is in, not the first one");
+			clickRow(250);
+			view.copyCurrentDiff(0);
+			check(view.diffCount() == 5, "table: Copy to Right with the cursor in no difference copies nothing");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFolderSelectionOpt))
+	{
+		// WinMerge's CDirView::OpenSelection over two or three selected
+		// items (issue #14): files with different names compare with each
+		// other, by the sides they are on or by the sides picked (Compare
+		// Non-horizontally); its Compare otherwise opens each item, and
+		// Enter compares the selection
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).absolutePath());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto waitFor = [](FolderCompareView *view) {
+			for (int i = 0; i < 400 && view->isComparingForTest(); ++i)
+			{
+				QThread::msleep(25);
+				QCoreApplication::processEvents();
+			}
+		};
+		const QString left = dir.filePath(QStringLiteral("left"));
+		const QString right = dir.filePath(QStringLiteral("right"));
+		write(left + QStringLiteral("/b-left.txt"), "left only\n");
+		write(left + QStringLiteral("/c-left.txt"), "left only too\n");
+		write(right + QStringLiteral("/a-right.txt"), "right only\n");
+		write(left + QStringLiteral("/both1.txt"), "same\n");
+		write(right + QStringLiteral("/both1.txt"), "same\n");
+		write(left + QStringLiteral("/both2.txt"), "one\n");
+		write(right + QStringLiteral("/both2.txt"), "two\n");
+		write(left + QStringLiteral("/only-dir/inside.txt"), "x\n");
+
+		FolderCompareView view;
+		QStringList opened;
+		QObject::connect(&view, &FolderCompareView::openFileComparisonRequested,
+			[&opened](const QString &l, const QString &r) {
+				opened.append(QFileInfo(l).dir().dirName() + QLatin1Char('/') + QFileInfo(l).fileName()
+					+ QStringLiteral(" | ") + QFileInfo(r).dir().dirName() + QLatin1Char('/')
+					+ QFileInfo(r).fileName());
+			});
+		view.start(QStringList{ left, right });
+		waitFor(&view);
+		// the menu of the selection, its item of a name triggered
+		const auto trigger = [&view](const char *name) {
+			QMenu menu;
+			view.buildContextMenuForTest(&menu);
+			QAction *action = menu.findChild<QAction *>(QLatin1String(name));
+			if (action == nullptr || !action->isEnabled())
+				return false;
+			action->trigger();
+			return true;
+		};
+		const auto enabled = [&view](const char *name) {
+			QMenu menu;
+			view.buildContextMenuForTest(&menu);
+			QAction *action = menu.findChild<QAction *>(QLatin1String(name));
+			return action != nullptr && action->isEnabled();
+		};
+		const auto present = [&view](const char *name) {
+			QMenu menu;
+			view.buildContextMenuForTest(&menu);
+			return menu.findChild<QAction *>(QLatin1String(name)) != nullptr;
+		};
+
+		view.selectRowsForTest({ QStringLiteral("b-left.txt"), QStringLiteral("a-right.txt") });
+		opened.clear();
+		trigger("compareSelection");
+		printf("  %s\n", qPrintable(opened.join(QStringLiteral("; "))));
+		check(opened == QStringList{ QStringLiteral("left/b-left.txt | right/a-right.txt") },
+			"a file only on the left and one only on the right compare with each other");
+		view.selectRowsForTest({ QStringLiteral("both1.txt"), QStringLiteral("a-right.txt") });
+		opened.clear();
+		trigger("compareSelection");
+		check(opened == QStringList{ QStringLiteral("left/both1.txt | right/a-right.txt") },
+			"one on both sides and one on the right: the left from the first");
+		view.selectRowsForTest({ QStringLiteral("both1.txt"), QStringLiteral("b-left.txt") });
+		opened.clear();
+		trigger("compareSelection");
+		check(opened == QStringList{ QStringLiteral("left/b-left.txt | right/both1.txt") },
+			"one on both sides and one on the left: the left from the left one");
+
+		// two on both sides do not compare with each other: each opens by
+		// itself, and the non-horizontal pairs pick their sides
+		view.selectRowsForTest({ QStringLiteral("both1.txt"), QStringLiteral("both2.txt") });
+		opened.clear();
+		trigger("compareSelection");
+		check(opened == QStringList({ QStringLiteral("left/both1.txt | right/both1.txt"),
+				QStringLiteral("left/both2.txt | right/both2.txt") }),
+			"Compare opens each of two items that do not go together");
+		opened.clear();
+		trigger("compareLeft1Left2");
+		trigger("compareRight1Right2");
+		trigger("compareLeft1Right2");
+		trigger("compareLeft2Right1");
+		printf("  %s\n", qPrintable(opened.join(QStringLiteral("; "))));
+		check(opened == QStringList({ QStringLiteral("left/both1.txt | left/both2.txt"),
+				QStringLiteral("right/both1.txt | right/both2.txt"),
+				QStringLiteral("left/both1.txt | right/both2.txt"),
+				QStringLiteral("left/both2.txt | right/both1.txt") }),
+			"Compare Non-horizontally: the four pairs of sides");
+		view.selectRowsForTest({ QStringLiteral("b-left.txt"), QStringLiteral("c-left.txt") });
+		check(enabled("compareLeft1Left2") && !enabled("compareRight1Right2")
+				&& !enabled("compareLeft1Right2") && enabled("compareSelection"),
+			"two files on the left: First Left with Second Left only");
+
+		// Enter compares the selection, and nothing when it does not go together
+		view.selectRowsForTest({ QStringLiteral("b-left.txt"), QStringLiteral("a-right.txt") });
+		opened.clear();
+		view.activateRowForTest(QStringLiteral("b-left.txt"));
+		check(opened == QStringList{ QStringLiteral("left/b-left.txt | right/a-right.txt") },
+			"Enter compares the two selected items");
+		view.selectRowsForTest({ QStringLiteral("both1.txt"), QStringLiteral("both2.txt") });
+		opened.clear();
+		view.activateRowForTest(QStringLiteral("both1.txt"));
+		check(opened.isEmpty(), "and does nothing when they do not go together");
+
+		// a folder selected: no Compare in a recursive comparison
+		view.selectRowsForTest({ QStringLiteral("only-dir") });
+		check(!present("compareSelection"), "a selected folder leaves Compare out of the menu");
+
+		// three items, one on each side of a three-way comparison
+		const QString l3 = dir.filePath(QStringLiteral("l3"));
+		const QString m3 = dir.filePath(QStringLiteral("m3"));
+		const QString r3 = dir.filePath(QStringLiteral("r3"));
+		write(l3 + QStringLiteral("/l.txt"), "l\n");
+		write(m3 + QStringLiteral("/m.txt"), "m\n");
+		write(r3 + QStringLiteral("/r.txt"), "r\n");
+		FolderCompareView three;
+		QStringList opened3;
+		QObject::connect(&three, &FolderCompareView::openFileComparison3Requested,
+			[&opened3](const QStringList &paths) {
+				QStringList names;
+				for (const QString &path : paths)
+					names.append(QFileInfo(path).dir().dirName() + QLatin1Char('/')
+						+ QFileInfo(path).fileName());
+				opened3.append(names.join(QStringLiteral(" | ")));
+			});
+		three.start(QStringList{ l3, m3, r3 });
+		waitFor(&three);
+		three.selectRowsForTest({ QStringLiteral("r.txt"), QStringLiteral("l.txt"), QStringLiteral("m.txt") });
+		QMenu menu3;
+		three.buildContextMenuForTest(&menu3);
+		QAction *compare3 = menu3.findChild<QAction *>(QStringLiteral("compareSelection"));
+		if (compare3 != nullptr && compare3->isEnabled())
+			compare3->trigger();
+		printf("  %s\n", qPrintable(opened3.join(QStringLiteral("; "))));
+		check(opened3 == QStringList{ QStringLiteral("l3/l.txt | m3/m.txt | r3/r.txt") }
+				&& menu3.findChild<QAction *>(QStringLiteral("compareLeft1Left2")) == nullptr,
+			"three-way: one item of each side compares, each on its side; no non-horizontal pairs");
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestTableEditOpt))
+	{
+		// upstream's table is its text editor: a cell takes what is typed
+		// in it, a filler row becomes a row of the file, the edits go into
+		// the undo history with the copies, and a selection of cells
+		// copies only its cells' differences (its column selection). The
+		// grid rewrites the one cell, quoting it when its value needs it.
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		const QString left = dir.filePath(QStringLiteral("left.csv"));
+		const QString right = dir.filePath(QStringLiteral("right.csv"));
+		write(left, "id,name,note\n1,apple,\"red, round\"\n2,banana,yellow\n");
+		write(right, "id,name,note\n1,apple,\"red, round\"\n2,banana,green\n3,cherry,dark\n");
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+				return 2;
+			view.resize(1000, 500);
+			view.show();
+			settle();
+			// (view row 1 is the apple's, the header's being row 0)
+			check(!view.diffRowsForTest().contains(1), "the apple rows agree before the edit");
+			// a cell of a row the two share: its line keeps the quotes it had
+			view.editCell(1, 0, 2, QStringLiteral("red; round"));
+			printf("  the edited line: %s\n", qPrintable(view.shownRowsForTest(1).value(0)));
+			check(view.shownRowsForTest(1).value(0) == QStringLiteral("1,apple,\"red; round\"")
+					&& view.diffRowsForTest().contains(1) && view.isModified(),
+				"an edited cell rewrites that cell of its line, and the tables compare again");
+			view.undo();
+			check(view.shownRowsForTest(1).value(0) == QStringLiteral("1,apple,\"red, round\"")
+					&& !view.diffRowsForTest().contains(1)
+					&& view.tableForTest(1)->currentIndex() == view.tableForTest(1)->model()->index(0, 2),
+				"Undo takes the edit back, at the edited cell");
+			view.redo();
+			check(view.shownRowsForTest(1).value(0) == QStringLiteral("1,apple,\"red; round\""),
+				"and Redo makes it again");
+			// a value with the delimiter and the quote is quoted, its quotes doubled
+			view.editCell(0, 1, 2, QStringLiteral("say \"hi\", ok"));
+			check(view.shownRowsForTest(0).value(1) == QStringLiteral("2,banana,\"say \"\"hi\"\", ok\"")
+					&& view.tableForTest(0)->model()->index(1, 2).data().toString()
+						== QStringLiteral("say \"hi\", ok"),
+				"a value that needs it is quoted, as the grid shows it unquoted");
+			// a cell past the end of the line: the cells before it come empty
+			view.editCell(0, 1, 4, QStringLiteral("x"));
+			check(view.shownRowsForTest(0).value(1).endsWith(QStringLiteral(",,x")),
+				"a cell past the last one adds the empty ones before it");
+			// the left one has no cherry row: typing there makes it a row
+			view.editCell(0, 2, 1, QStringLiteral("cherry"));
+			check(view.shownRowsForTest(0).value(2) == QStringLiteral(",cherry"),
+				"a cell of a filler row makes the row a line of the file");
+			// through the grid, as typing in a cell does
+			QAbstractItemModel *rightModel = view.tableForTest(1)->model();
+			rightModel->setData(rightModel->index(1, 1), QStringLiteral("Banana"), Qt::EditRole);
+			settle();
+			check(view.shownRowsForTest(1).value(1) == QStringLiteral("2,Banana,green"),
+				"the grid's editor commits its cell");
+			check(view.saveModified(&error)
+					&& read(right) == "id,name,note\n1,apple,\"red; round\"\n2,Banana,green\n3,cherry,dark\n",
+				"Save writes the edited lines");
+		}
+
+		// a line break in a quoted cell, with "Allow newlines in quotes"
+		write(left, "id,text\n1,one\n");
+		write(right, "id,text\n1,one\n");
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+				return 2;
+			view.editCell(1, 0, 1, QStringLiteral("first\nsecond"));
+			check(view.tableForTest(1)->model()->rowCount() == 1
+					&& view.tableForTest(1)->model()->index(0, 1).data().toString()
+						== QStringLiteral("first\nsecond")
+					&& view.saveModified(&error)
+					&& read(right) == "id,text\n1,\"first\nsecond\"\n",
+				"a line break typed in a cell keeps the row one, its cell quoted");
+		}
+
+		// the copies of the selected cells
+		write(left, "id,a,b,c\n1,x,y,z\n");
+		write(right, "id,a,b,c\n1,X,Y,z\n");
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+				return 2;
+			QItemSelectionModel *selection = view.tableForTest(0)->selectionModel();
+			const QAbstractItemModel *model = view.tableForTest(0)->model();
+			selection->select(model->index(0, 1), QItemSelectionModel::Select);
+			selection->select(model->index(0, 3), QItemSelectionModel::Select);
+			view.copyCurrentDiff(0, 1);
+			check(view.shownRowsForTest(1).value(0) == QStringLiteral("1,x,Y,z")
+					&& view.diffCount() == 1,
+				"Copy to Right with two cells selected copies only the one of them that differs");
+			view.undo();
+			check(view.shownRowsForTest(1).value(0) == QStringLiteral("1,X,Y,z"),
+				"Undo takes the copy of the cells back");
+			view.tableForTest(0)->selectionModel()->clearSelection();
+			view.tableForTest(0)->selectionModel()->select(view.tableForTest(0)->model()->index(0, 2),
+				QItemSelectionModel::Select);
+			view.copyCurrentDiff(0, 1);
+			check(view.shownRowsForTest(1).value(0) == QStringLiteral("1,x,y,z")
+					&& view.diffCount() == 0,
+				"one selected cell is the cursor: the whole difference goes");
+		}
+
+		// whole rows selected: the differences they are in go whole, rows a
+		// side lacks among them
+		write(left, "id,v\n1,a\n2,b\n3,c\n");
+		write(right, "id,v\n1,a\n2,B\n");
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+				return 2;
+			QItemSelectionModel *selection = view.tableForTest(0)->selectionModel();
+			const QAbstractItemModel *model = view.tableForTest(0)->model();
+			selection->select(QItemSelection(model->index(1, 0), model->index(2, 1)),
+				QItemSelectionModel::Select | QItemSelectionModel::Rows);
+			view.copyCurrentDiff(0, 1);
+			check(view.diffCount() == 0
+					&& view.shownRowsForTest(1) == QStringList({ QStringLiteral("1,a"),
+						QStringLiteral("2,b"), QStringLiteral("3,c") }),
+				"whole rows selected copy the differences they are in, the right's missing row too");
+		}
+
+		// a middle side edits as the others do
+		const QString middle = dir.filePath(QStringLiteral("middle.csv"));
+		write(left, "id,v\n1,a\n");
+		write(middle, "id,v\n1,a\n");
+		write(right, "id,v\n1,b\n");
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ left, middle, right }, &error))
+				return 2;
+			view.editCell(1, 0, 1, QStringLiteral("b"));
+			check(view.shownRowsForTest(1).value(0) == QStringLiteral("1,b"),
+				"the middle one of three tables takes edits too");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestSubfoldersOpt))
+	{
+		// WinMerge's "Include subfolders" off (CDiffContext::m_bRecursive):
+		// the top folders' items only, the subfolders among them with no
+		// result, ".." up to the parent folders, a folder item opening in
+		// the same window (a missing side created first when the user says
+		// so), the selection screen's box and the command line's -r
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QDir().mkpath(QFileInfo(path).path());
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 30; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		const auto waitFor = [&settle](FolderCompareView &view)
+		{
+			for (int i = 0; i < 300 && view.isComparing(); ++i)
+				settle();
+			settle();
+		};
+		const QString left = dir.filePath(QStringLiteral("left"));
+		const QString right = dir.filePath(QStringLiteral("right"));
+		write(left + QStringLiteral("/a.txt"), "same\n");
+		write(right + QStringLiteral("/a.txt"), "same\n");
+		write(left + QStringLiteral("/sub/x.txt"), "1\n");
+		write(right + QStringLiteral("/sub/x.txt"), "2\n");
+		write(left + QStringLiteral("/onlyleft/y.txt"), "y\n");
+		using Item = lm::FolderCompareItem;
+		{
+			FolderCompareView view;
+			view.setRecursive(false);
+			int moved = 0;
+			QObject::connect(&view, &FolderCompareView::rootsChanged, [&moved]() { ++moved; });
+			view.start({ left, right });
+			waitFor(view);
+			check(view.rowCategoryForTest(QStringLiteral("a.txt")) == Item::Identical
+					&& view.rowCategoryForTest(QStringLiteral("sub")) == Item::NotCompared
+					&& view.rowResultForTest(QStringLiteral("sub")).isEmpty()
+					&& view.rowCategoryForTest(QStringLiteral("onlyleft")) == Item::LeftOnly
+					&& view.rowCategoryForTest(QStringLiteral("x.txt")) == -1,
+				"without subfolders: the top items, a folder on both sides with no result");
+			check(view.rowShownForTest(QStringLiteral("..")), "\"..\" heads the list");
+			view.activateRowForTest(QStringLiteral("sub"));
+			waitFor(view);
+			check(moved == 1 && view.roots() == QStringList({ left + QStringLiteral("/sub"),
+					right + QStringLiteral("/sub") })
+					&& view.rowCategoryForTest(QStringLiteral("x.txt")) == Item::Different,
+				"a folder item opens in the same window");
+			view.activateRowForTest(QStringLiteral(".."));
+			waitFor(view);
+			check(moved == 2 && view.roots() == QStringList({ left, right }),
+				"\"..\" goes back up to the parent folders");
+			QStringList asked;
+			lm::setQuestionSinkForTest([&asked](const QString &text, bool *) {
+				asked << text;
+				return true;
+			});
+			view.activateRowForTest(QStringLiteral("onlyleft"));
+			waitFor(view);
+			lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+			check(asked.size() == 1 && asked.first().contains(right + QStringLiteral("/onlyleft"))
+					&& QFileInfo(right + QStringLiteral("/onlyleft")).isDir()
+					&& view.roots().value(1) == right + QStringLiteral("/onlyleft"),
+				"a folder on one side: the matching one created on the user's word, and opened");
+			QDir(right + QStringLiteral("/onlyleft")).removeRecursively();
+		}
+		{
+			FolderCompareView view;
+			view.start({ left, right });
+			waitFor(view);
+			check(view.isRecursive() && view.rowCategoryForTest(QStringLiteral("x.txt")) == Item::Different
+					&& !view.rowShownForTest(QStringLiteral("..")),
+				"with subfolders, as by default: no \"..\"");
+		}
+		// the selection screen's box saves the option as Compare runs, and
+		// the comparison goes by it
+		{
+			MainWindow window;
+			window.openSelector({ left, right });
+			auto *selector = window.findChild<NewComparisonView *>();
+			auto *box = selector != nullptr
+				? selector->findChild<QCheckBox *>(QStringLiteral("includeSubfolders")) : nullptr;
+			if (box == nullptr)
+				return 2;
+			const bool onAtFirst = box->isChecked();
+			box->setChecked(false);
+			QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+			QCoreApplication::sendEvent(selector->findChild<QLineEdit *>(), &enter);
+			settle();
+			auto *view = window.findChild<FolderCompareView *>();
+			check(onAtFirst && !lm::includeSubfolders() && view != nullptr && !view->isRecursive(),
+				"the selection screen's \"Include subfolders\": on by default, saved, followed");
+			lm::saveIncludeSubfolders(true);
+		}
+		// -r- on the command line, whatever the option
+		{
+			MainWindow window;
+			window.openFromCommandLine(lm::CommandLine::parse({ QStringLiteral("-r-"), left, right }));
+			auto *view = window.findChild<FolderCompareView *>();
+			check(view != nullptr && !view->isRecursive(), "-r-: without the subfolders");
+		}
+		// unattended, without the subfolders a subfolder's differences
+		// do not count
+		const auto run = [](const QStringList &arguments) {
+			QProcess process;
+			process.start(QCoreApplication::applicationFilePath(), arguments);
+			if (!process.waitForFinished(60000))
+			{
+				process.kill();
+				process.waitForFinished();
+				return -100;
+			}
+			return process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -101;
+		};
+		QDir(left + QStringLiteral("/onlyleft")).removeRecursively();
+		const QStringList unattended = { QStringLiteral("-noninteractive"),
+			QStringLiteral("-enableexitcode"), QStringLiteral("-noprefs") };
+		check(run(unattended + QStringList{ QStringLiteral("-r-"), left, right }) == 0
+				&& run(unattended + QStringList{ QStringLiteral("-r"), left, right }) == 1,
+			"-r- and -r: the subfolder's difference counts only with the subfolders");
+		printf("subfolders: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestCommandLineOpt))
+	{
+		// WinMerge's command line (MergeCmdLineInfo, ParseArgsAndDoOpen):
+		// its switches read as upstream reads them, "-" only in front, and
+		// what they open: descriptions, read-only sides, the window type,
+		// the focus and the line, the language, the recent comparisons, a
+		// self-compare, and Esc and identical files closing MergeDesk
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 30; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		using Cmd = lm::CommandLine;
+		const auto parse = [](const QStringList &arguments) { return Cmd::parse(arguments); };
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		write(left, "a\nb\nc\n");
+		write(right, "a\nx\nc\n");
+
+		// reading
+		{
+			const Cmd cmd = parse({ QStringLiteral("-dl"), QStringLiteral("Base"),
+				QStringLiteral("-DR"), QStringLiteral("Mine"), QStringLiteral("-wl"),
+				QStringLiteral("-u"), QStringLiteral("-e"), QStringLiteral("-x"), left,
+				QStringLiteral("right.txt") });
+			check(cmd.leftDesc == QStringLiteral("Base") && cmd.rightDesc == QStringLiteral("Mine")
+					&& cmd.leftFlags == (Cmd::ReadOnly | Cmd::NoMru) && cmd.rightFlags == Cmd::NoMru
+					&& cmd.escShutdown && cmd.exitIfNoDiff == Cmd::ExitNoDiff::Exit
+					&& cmd.paths == QStringList({ left, QDir::current().absoluteFilePath(QStringLiteral("right.txt")) })
+					&& cmd.errors.isEmpty() && cmd.unsupported.isEmpty(),
+				"read: descriptions, flags, -e, -x, paths in full, names in any case");
+		}
+		{
+			const QString absoluteInput = dir.filePath(QStringLiteral("parser-input.py"));
+			const Cmd cmd = parse({ QStringLiteral("-ignorews:2"), QStringLiteral("-ignorecase"),
+				QStringLiteral("-cfg"), QStringLiteral("Settings/IgnoreBlankLines=1"),
+				QStringLiteral("-cfg:Settings/IgnoreEOL=1"), QStringLiteral("-m"),
+				QStringLiteral("Date and Size"), QStringLiteral("-t"), QStringLiteral("table"),
+				QStringLiteral("-l"), QStringLiteral("5"), QStringLiteral("-c"), QStringLiteral("3"),
+				QStringLiteral("-table-delimiter"), QStringLiteral("tab"),
+				QStringLiteral("-table-quote"), QStringLiteral("sq"),
+				QStringLiteral("-table-allownewlinesinquotes"), QStringLiteral("no"),
+				QStringLiteral("-fileext"), QStringLiteral("py"), absoluteInput });
+			const QList<std::pair<QString, QString>> options = {
+				{ QString::fromStdString(OPT_CMP_IGNORE_WHITESPACE), QStringLiteral("2") },
+				{ QString::fromStdString(OPT_CMP_IGNORE_CASE), QStringLiteral("1") },
+				{ QStringLiteral("Settings/IgnoreBlankLines"), QStringLiteral("1") },
+				{ QStringLiteral("Settings/IgnoreEOL"), QStringLiteral("1") } };
+			check(cmd.options == options && cmd.compareMethod == 4
+					&& cmd.windowType == Cmd::WindowType::Table
+					&& cmd.lineIndex == 4 && cmd.charIndex == 2
+					&& cmd.tableDelimiter == QLatin1Char('\t') && cmd.tableQuote == QLatin1Char('\'')
+					&& cmd.tableAllowNewlinesInQuotes == false
+					&& cmd.fileExt == QStringLiteral(".py")
+					&& cmd.paths == QStringList({ absoluteInput }) && cmd.errors.isEmpty(),
+				"read: options after a colon or as -cfg, method, type, line, table, extension; native absolute paths");
+		}
+#ifdef Q_OS_WIN
+		{
+			const Cmd cmd = parse({ QStringLiteral("/dl"), QStringLiteral("Base"),
+				QStringLiteral("/wl"), QStringLiteral("/r:1"), left, right });
+			check(cmd.leftDesc == QStringLiteral("Base") && (cmd.leftFlags & Cmd::ReadOnly)
+					&& cmd.recursive == true && cmd.paths == QStringList({left, right})
+					&& cmd.errors.isEmpty() && cmd.unsupported.isEmpty(),
+				"read: native Windows slash switches and drive-qualified paths");
+		}
+#endif
+		{
+			const Cmd cmd = parse({ QStringLiteral("-s"), QStringLiteral("-sw"), QStringLiteral("-g"),
+				QStringLiteral("group"), QStringLiteral("-show-compare-as-menu"), QStringLiteral("-o"),
+				QStringLiteral("out.txt"), QStringLiteral("-r:0"), QStringLiteral("-noninteractive"),
+				QStringLiteral("-t"), QStringLiteral("web"), QStringLiteral("-l"), QStringLiteral("0"),
+				QStringLiteral("-xyz"), QStringLiteral("--new"), QStringLiteral("-new"), QStringLiteral("-?") });
+			check(cmd.paths.isEmpty()
+					&& cmd.unsupported.isEmpty() && cmd.windowType == Cmd::WindowType::WebPage
+					&& cmd.recursive == false
+					&& cmd.errors == QStringList({ QStringLiteral("Invalid line number specified"),
+						QStringLiteral("Unknown option '-xyz'") })
+					&& cmd.newCompare && cmd.showUsage,
+				"read: Windows' own taken in silence, the others told, values not taken for paths");
+		}
+		{
+			const Cmd cmd = parse({ QStringLiteral("-noninteractive"), QStringLiteral("-EnableExitCode"),
+				QStringLiteral("-noprefs"), QStringLiteral("-o"), QStringLiteral("out.txt"),
+				QStringLiteral("-inifile"), QStringLiteral("opts.ini") });
+			check(cmd.nonInteractive && cmd.enableExitCode && cmd.noPrefs
+					&& cmd.outputPath == QDir::current().absoluteFilePath(QStringLiteral("out.txt"))
+					&& cmd.iniFile == QDir::current().absoluteFilePath(QStringLiteral("opts.ini"))
+					&& cmd.paths.isEmpty() && cmd.unsupported.isEmpty() && cmd.errors.isEmpty(),
+				"read: the switches of an unattended run");
+			check(!parse({ QStringLiteral("-noninteractive"), QStringLiteral("-show-dialog"),
+					QStringLiteral("about") }).nonInteractive,
+				"read: a dialog shown alone is no unattended run");
+		}
+		// options by name, for this run
+		{
+			const QStringList unknown = lm::useOptions({
+				{ QStringLiteral("Settings/IgnoreCase"), QStringLiteral("1") },
+				{ QStringLiteral("IgnoreBlankLines"), QStringLiteral("1") },
+				{ QStringLiteral("NoSuchOption"), QStringLiteral("1") } });
+			const DIFFOPTIONS options = lm::currentDiffOptions();
+			check(unknown == QStringList({ QStringLiteral("NoSuchOption") })
+					&& options.bIgnoreCase && options.bIgnoreBlankLines,
+				"options by their name or the end of it, an unknown one told");
+			lm::setCompareOptionsForTest(0);
+			// and those MergeDesk keeps itself, by WinMerge's names, until
+			// the Options are saved
+			const QStringList unknownToo = lm::useOptions({
+				{ QStringLiteral("Settings/ScrollToFirst"), QStringLiteral("1") },
+				{ QStringLiteral("PreserveFiletimes"), QStringLiteral("1") },
+				{ QStringLiteral("Settings/CSVDelimiterCharacter"), QStringLiteral(";") } });
+			const bool set = unknownToo.isEmpty() && OptionsDialog::scrollToFirstDiff()
+				&& OptionsDialog::preserveFileTime()
+				&& lm::TableSettings::load().csvDelimiter == QStringLiteral(";");
+			lm::forgetCommandLineSettings();
+			check(set && !OptionsDialog::scrollToFirstDiff() && !OptionsDialog::preserveFileTime(),
+				"-cfg: the options of the Options pages by WinMerge's names, for this run");
+		}
+
+		// opening
+		QApplication::setQuitOnLastWindowClosed(false);
+		const auto recent = []() {
+			return QSettings().value(QStringLiteral("RecentComparisons/List")).toStringList();
+		};
+		const auto fileView = [](MainWindow &window) {
+			return qobject_cast<FileCompareView *>(window.findChild<QTabWidget *>()->currentWidget());
+		};
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-dl"), QStringLiteral("Base"),
+				QStringLiteral("-dr"), QStringLiteral("Mine"), QStringLiteral("-wl"),
+				QStringLiteral("-fr"), QStringLiteral("-l"), QStringLiteral("3"), QStringLiteral("-c"),
+				QStringLiteral("2"), QStringLiteral("-u"), left, right }));
+			window.show();
+			settle();
+			FileCompareView *view = fileView(window);
+			check(view != nullptr && view->sideCaption(0) == QStringLiteral("Base")
+					&& view->sideCaption(1) == QStringLiteral("Mine")
+					&& view->isSideReadOnly(0) && !view->isSideReadOnly(1),
+				"open: the descriptions, the left side read-only");
+			check(view != nullptr && view->activePaneForTest() == 1
+					&& view->cursorViewLineForTest(1) == 2
+					&& view->paneForTest(1)->textCursor().positionInBlock() == 1,
+				"open: the focus on the right, at line 3, character 2");
+			check(recent().isEmpty(), "open: -u leaves the recent comparisons alone");
+		}
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ left, right }));
+			check(recent().size() == 1, "open: without -u, a recent comparison");
+		}
+		// the window type and the language
+		const QString table = dir.filePath(QStringLiteral("data.txt"));
+		const QString table2 = dir.filePath(QStringLiteral("data2.txt"));
+		write(table, "id;name\n1;a\n");
+		write(table2, "id;name\n1;b\n");
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-t"), QStringLiteral("table"),
+				QStringLiteral("-table-delimiter"), QStringLiteral(";"), table, table2 }));
+			auto *view = qobject_cast<TableCompareView *>(
+				window.findChild<QTabWidget *>()->currentWidget());
+			check(view != nullptr && view->diffCount() == 1 && view->diffRowsForTest() == QList<int>({ 1 }),
+				"-t table: text files as tables, by the delimiter given");
+		}
+		const QString script = dir.filePath(QStringLiteral("script"));
+		const QString script2 = dir.filePath(QStringLiteral("script2"));
+		write(script, "x = 1  # one\n");
+		write(script2, "x = 2  # two\n");
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-fileext"), QStringLiteral("py"),
+				script, script2 }));
+			FileCompareView *view = fileView(window);
+			check(view != nullptr && view->highlighterForTest(0) != nullptr
+					&& view->highlighterForTest(0)->languageName() == QStringLiteral("Python"),
+				"-fileext: colored as Python");
+		}
+		// self-compare
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-self-compare"), left }));
+			FileCompareView *view = fileView(window);
+			check(view != nullptr && view->paths().value(1) == left
+					&& view->sideCaption(0) == MainWindow::tr("Original File"),
+				"-self-compare: the file against a copy of itself");
+		}
+		// Esc closes MergeDesk with one comparison open (-e)
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-e"), left, right }));
+			window.show();
+			settle();
+			QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+			QCoreApplication::sendEvent(&window, &press);
+			settle();
+			check(!window.isVisible(), "-e: Esc closes MergeDesk");
+		}
+		// identical files: -x says so and closes, -xq closes quietly, and
+		// only the first comparison does
+		QStringList messages;
+		lm::setMessageSinkForTest([&messages](const QString &text) { messages << text; });
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-x"), left, left }));
+			window.show();
+			settle();
+			check(messages.size() == 1 && !window.isVisible(), "-x: told, and closed");
+		}
+		messages.clear();
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-xq"), left, left }));
+			window.show();
+			settle();
+			check(messages.isEmpty() && !window.isVisible(), "-xq: closed without a word");
+		}
+		{
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-x"), left, right }));
+			window.show();
+			settle();
+			window.openFileComparison({ left, left });
+			settle();
+			check(window.isVisible(), "-x: different files stay, and so does what opens next");
+		}
+		lm::setMessageSinkForTest([](const QString &) {});
+
+		// -o: a side saves to the output path, and goes on with it
+		{
+			const QString output = dir.filePath(QStringLiteral("merged.txt"));
+			MainWindow window;
+			window.openFromCommandLine(parse({ QStringLiteral("-o"), output, left, right }));
+			FileCompareView *view = fileView(window);
+			QString error;
+			if (view != nullptr)
+			{
+				view->typeAtForTest(0, 0, QStringLiteral("z"));
+				view->saveSideAt(0, &error);
+			}
+			QFile merged(output);
+			QFile original(left);
+			check(view != nullptr && merged.open(QIODevice::ReadOnly)
+					&& merged.readAll() == "za\nb\nc\n" && original.open(QIODevice::ReadOnly)
+					&& original.readAll() == "a\nb\nc\n" && view->paths().value(0) == output,
+				"-o: saved to the output path, the pane going on with it");
+		}
+
+		// unattended runs of MergeDesk itself (with -noprefs or -inifile,
+		// so that nothing of the user's is read or written): the exit code
+		// of identical, different and missing files and folders, the
+		// message on the terminal, and an INI file's options
+		const auto run = [](const QStringList &arguments, QByteArray *output = nullptr) {
+			QProcess process;
+			process.start(QCoreApplication::applicationFilePath(), arguments);
+			if (!process.waitForFinished(60000))
+			{
+				process.kill();
+				process.waitForFinished();
+				return -100;
+			}
+			if (output != nullptr)
+				*output = process.readAllStandardError();
+			return process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -101;
+		};
+		const QStringList unattended = { QStringLiteral("-noninteractive"),
+			QStringLiteral("-enableexitcode"), QStringLiteral("-noprefs") };
+		const QString same = dir.filePath(QStringLiteral("same.txt"));
+		write(same, "a\nb\nc\n");
+		QByteArray said;
+		check(run(unattended + QStringList{ left, same }, &said) == 0
+				&& said.contains(QCoreApplication::translate("MessageBoxes",
+					"Selected files are identical (binary match).").toUtf8()),
+			"-noninteractive -enableexitcode: identical files exit 0, the message on the terminal");
+		check(run(unattended + QStringList{ left, right }) == 1, "different files exit 1");
+		check(run(unattended + QStringList{ left, dir.filePath(QStringLiteral("missing.txt")) }) == 2,
+			"a file that cannot be compared exits 2");
+		const QString folderA = dir.filePath(QStringLiteral("a"));
+		const QString folderB = dir.filePath(QStringLiteral("b"));
+		QDir().mkpath(folderA);
+		QDir().mkpath(folderB);
+		write(folderA + QStringLiteral("/x.txt"), "1\n");
+		write(folderB + QStringLiteral("/x.txt"), "1\n");
+		const int foldersSame = run(unattended + QStringList{ folderA, folderB });
+		write(folderB + QStringLiteral("/x.txt"), "2\n");
+		check(foldersSame == 0 && run(unattended + QStringList{ folderA, folderB }) == 1,
+			"folders: 0 when identical, 1 when not, once the comparison ends");
+		const QString upper = dir.filePath(QStringLiteral("upper.txt"));
+		write(upper, "A\nB\nC\n");
+		const QString ini = dir.filePath(QStringLiteral("options.ini"));
+		write(ini, "[Settings]\nIgnoreCase=true\n");
+		const QStringList withIni = { QStringLiteral("-noninteractive"),
+			QStringLiteral("-enableexitcode"), QStringLiteral("-inifile"), ini };
+		const int caseIgnored = run(withIni + QStringList{ left, upper });
+		QFile iniFile(ini);
+		check(caseIgnored == 0 && run(unattended + QStringList{ left, upper }) == 1
+				&& iniFile.open(QIODevice::ReadOnly) && iniFile.readAll().contains("IgnoreCase=true"),
+			"-inifile: its options read and kept; -noprefs: the defaults");
+
+		printf("command line: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestCodepageOpt))
+	{
+		// WinMerge's Codepage page (PropCodepage) and what it decides: the
+		// codepage the files without a BOM read and save in, the default
+		// one (the system's, the interface's or a custom one, -cp too) or
+		// the one detected (an HTML file's charset, ICU's detector), valid
+		// UTF-8 reading as UTF-8 whatever the default
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		// what a comparison read, for a failure on another system
+		const auto show = [](const char *what, const FileCompareView &view) {
+			printf("  %s: %s | %s, %d difference(s), \"%s\"\n", what,
+				qPrintable(view.encodingTextForTest(0)), qPrintable(view.encodingTextForTest(1)),
+				view.diffCount(), qPrintable(view.realLinesForTest(0).join(QLatin1Char('|'))));
+		};
+		COptionsMgr *mgr = GetOptionsMgr();
+		const QString cafe = QString::fromUtf8("caf\xc3\xa9");
+		const QString latin = dir.filePath(QStringLiteral("latin1.txt"));
+		const QString utf8 = dir.filePath(QStringLiteral("utf8.txt"));
+		write(latin, cafe.toLatin1() + "\n");
+		write(utf8, cafe.toUtf8() + "\n");
+		QString error;
+
+		// the page, after Backup Files: its controls, WinMerge's defaults,
+		// what is saved and shown again, and the Defaults button
+		{
+			OptionsDialog dialog;
+			const QList<OptionsDialog::CategoryInfo> categories = dialog.categoriesForTest();
+			check(categories.size() > 1 && categories.last().page == OptionsDialog::CodepagePage
+					&& categories.last().text == OptionsDialog::tr("Codepage")
+					&& categories.at(categories.size() - 2).page == OptionsDialog::BackupPage,
+				"page: Codepage, after Backup Files");
+			QWidget *page = dialog.pageForTest(OptionsDialog::CodepagePage);
+			auto *system = page->findChild<QRadioButton *>(QStringLiteral("codepageMode0"));
+			auto *customMode = page->findChild<QRadioButton *>(QStringLiteral("codepageMode2"));
+			auto *custom = page->findChild<QComboBox *>(QStringLiteral("customCodepage"));
+			auto *detect = page->findChild<QCheckBox *>(QStringLiteral("detectCodepage"));
+			auto *detect2 = page->findChild<QCheckBox *>(QStringLiteral("detectCodepage2"));
+			auto *type = page->findChild<QComboBox *>(QStringLiteral("autodetectType"));
+			if (system == nullptr || customMode == nullptr || custom == nullptr
+				|| detect == nullptr || detect2 == nullptr || type == nullptr)
+				return 2;
+			check(system->isChecked() && !custom->isEnabled() && custom->currentData().toInt() == 65001
+					&& detect->isChecked() && !detect2->isChecked() && !type->isEnabled()
+					&& type->count() == 5 && type->currentData().toInt() == 50001,
+				"page: the system codepage (UTF-8) and the declared charsets by default");
+			printf("  %d codepages, %s ... %s; 1252 at %d, 28591 at %d, 932 at %d\n",
+				custom->count(), qPrintable(custom->itemText(0)),
+				qPrintable(custom->itemText(custom->count() - 1)), custom->findData(1252),
+				custom->findData(28591), custom->findData(932));
+			const int windows1252 = custom->findData(1252);
+			check(windows1252 >= 0 && custom->itemText(windows1252).startsWith(QStringLiteral(" 1252 - "))
+					&& custom->findData(28591) >= 0 && custom->findData(932) >= 0
+					&& custom->findData(437) >= 0 && custom->findData(65000) >= 0
+					&& custom->itemText(0).compare(custom->itemText(1), Qt::CaseInsensitive) < 0,
+				"page: the codepages, \"% 5d - name\" and sorted, upstream's added by hand too");
+			customMode->setChecked(true);
+			detect2->setChecked(true);
+			check(custom->isEnabled() && type->isEnabled(),
+				"page: the fields with Custom codepage and the detector");
+			// typed in by its name, as GetEncodingCodePageFromNameString takes it
+			custom->setEditText(QStringLiteral("Windows-1252"));
+			type->setCurrentIndex(type->findData(50932));
+			dialog.saveForTest();
+			check(mgr->GetInt(OPT_CP_DEFAULT_MODE) == 2 && mgr->GetInt(OPT_CP_DEFAULT_CUSTOM) == 1252
+					&& mgr->GetInt(OPT_CP_DETECT) == ((50932 << 16) | 3),
+				"page: saved, the codepage typed in by its name");
+			dialog.selectCategoryForTest(categories.size() - 1);
+			dialog.restoreDefaultsForTest();
+			check(system->isChecked() && !custom->isEnabled() && custom->currentData().toInt() == 65001
+					&& detect->isChecked() && !detect2->isChecked() && type->currentData().toInt() == 50001,
+				"page: Defaults");
+		}
+		{
+			OptionsDialog dialog;
+			QWidget *page = dialog.pageForTest(OptionsDialog::CodepagePage);
+			auto *custom = page->findChild<QComboBox *>(QStringLiteral("customCodepage"));
+			auto *type = page->findChild<QComboBox *>(QStringLiteral("autodetectType"));
+			check(page->findChild<QRadioButton *>(QStringLiteral("codepageMode2"))->isChecked()
+					&& custom->isEnabled() && custom->currentData().toInt() == 1252
+					&& page->findChild<QCheckBox *>(QStringLiteral("detectCodepage2"))->isChecked()
+					&& type->isEnabled() && type->currentData().toInt() == 50932,
+				"page: shows what was saved");
+		}
+		mgr->SaveOption(OPT_CP_DEFAULT_MODE, 0);
+		mgr->SaveOption(OPT_CP_DEFAULT_CUSTOM, 65001);
+		mgr->SaveOption(OPT_CP_DETECT, (50001 << 16) | 1);
+		lm::updateCodepageModule();
+
+		// the system codepage, UTF-8: a Latin-1 file does not read as such
+		{
+			FileCompareView view;
+			if (!view.compare(latin, utf8, &error))
+				return 2;
+			show("system", view);
+			check(view.realLinesForTest(1) == QStringList({ cafe })
+					&& view.realLinesForTest(0) == QStringList({ QStringLiteral("caf?") })
+					&& view.encodingTextForTest(1).startsWith(QStringLiteral("UTF-8")),
+				"system codepage: UTF-8 without a BOM reads as UTF-8, Latin-1's byte as ?");
+		}
+		// a custom one: the Latin-1 file reads and saves in it, UTF-8
+		// still reads as UTF-8
+		lm::updateDefaultCodepage(2, 1252);
+		{
+			FileCompareView view;
+			if (!view.compare(latin, utf8, &error))
+				return 2;
+			show("1252", view);
+			check(view.realLinesForTest(0) == QStringList({ cafe })
+					&& view.realLinesForTest(1) == QStringList({ cafe }) && view.diffCount() == 0
+					&& view.encodingTextForTest(0).startsWith(QStringLiteral("Windows-1252"))
+					&& view.encodingTextForTest(1).startsWith(QStringLiteral("UTF-8")),
+				"custom 1252: Latin-1 reads as cafe, UTF-8 as UTF-8");
+			view.typeAtForTest(0, 0, QString::fromUtf8("\xc3\xa0"));
+			check(view.saveSideAt(0, &error) && read(latin) == "\xe0" "caf\xe9\n",
+				"custom 1252: saved in it");
+		}
+		write(latin, cafe.toLatin1() + "\n");
+		// a table as well
+		const QString latinCsv = dir.filePath(QStringLiteral("latin1.csv"));
+		const QString utf8Csv = dir.filePath(QStringLiteral("utf8.csv"));
+		write(latinCsv, "id,name\n1," + cafe.toLatin1() + "\n");
+		write(utf8Csv, "id,name\n1," + cafe.toUtf8() + "\n");
+		{
+			TableCompareView view;
+			if (!view.compare(latinCsv, utf8Csv, &error))
+				return 2;
+			printf("  table: %d difference(s), \"%s\"\n", view.diffCount(),
+				qPrintable(view.shownRowsForTest(0).join(QLatin1Char('|'))));
+			check(view.diffCount() == 0 && view.shownRowsForTest(0).contains(QStringLiteral("1,") + cafe),
+				"custom 1252: a table reads in it too");
+		}
+		lm::updateDefaultCodepage(0, 0);
+		{
+			TableCompareView view;
+			if (!view.compare(latinCsv, utf8Csv, &error))
+				return 2;
+			check(view.diffCount() == 1, "system codepage: the table's Latin-1 row differs");
+		}
+		// the interface's codepage, Windows' one of its language
+		const auto interfaceCodepage = [](const char *language) {
+			lm::setInterfaceLanguage(QString::fromLatin1(language));
+			lm::updateDefaultCodepage(1, 0);
+			return ucr::getDefaultCodepage();
+		};
+		check(interfaceCodepage("en") == 1252 && interfaceCodepage("pt_BR") == 1252
+				&& interfaceCodepage("de") == 1252 && interfaceCodepage("es") == 1252
+				&& interfaceCodepage("ca") == 1252 && interfaceCodepage("fr") == 1252
+				&& interfaceCodepage("ru") == 1251 && interfaceCodepage("ja") == 932
+				&& interfaceCodepage("zh_CN") == 936 && interfaceCodepage("zh_TW") == 950,
+			"interface: the Windows codepage of its language");
+		lm::setInterfaceLanguage(QStringLiteral("en"));
+		lm::updateDefaultCodepage(0, 0);
+
+		// an HTML file by the charset it declares (the first detection)
+		const QString html = dir.filePath(QStringLiteral("page.html"));
+		write(html, "<meta charset=\"iso-8859-1\">\n<p>" + cafe.toLatin1() + "</p>\n");
+		// the same text in UTF-8, in a file whose charset nothing reads
+		const QString htmlUtf8 = dir.filePath(QStringLiteral("page8.txt"));
+		write(htmlUtf8, "<meta charset=\"iso-8859-1\">\n<p>" + cafe.toUtf8() + "</p>\n");
+		{
+			FileCompareView view;
+			if (!view.compare(html, htmlUtf8, &error))
+				return 2;
+			show("HTML", view);
+			check(view.realLinesForTest(0).value(1) == QStringLiteral("<p>") + cafe + QStringLiteral("</p>")
+					&& view.diffCount() == 0,
+				"HTML: read in the charset it declares");
+		}
+		mgr->Set(OPT_CP_DETECT, 50001 << 16);
+		{
+			FileCompareView view;
+			if (!view.compare(html, htmlUtf8, &error))
+				return 2;
+			check(view.diffCount() == 1, "HTML: not without the detection");
+		}
+		// ICU's detector (the second): the encoding of a French text in
+		// Latin-1, and of a Japanese one in Shift_JIS among Japanese's
+		const QString french = dir.filePath(QStringLiteral("french.txt"));
+		const QString frenchText = QString::fromUtf8("Le caf\xc3\xa9 de la gare a ferm\xc3\xa9 ce soir.\n"
+			"La fa\xc3\xa7" "ade a \xc3\xa9t\xc3\xa9 repeinte en d\xc3\xa9" "cembre.\n"
+			"Un \xc3\xa9tudiant a r\xc3\xa9pondu, le pr\xc3\xa9sident a d\xc3\xa9" "cid\xc3\xa9.\n");
+		write(french, frenchText.toLatin1());
+		const QString frenchUtf8 = dir.filePath(QStringLiteral("french8.txt"));
+		write(frenchUtf8, frenchText.toUtf8());
+		const QString japanese = dir.filePath(QStringLiteral("japanese.txt"));
+		write(japanese, QByteArray::fromHex("82b182f182c982bf82cd90a28a45814293fa967b8cea82cc"
+			"8365834c8358836782c582b781420a82b182ea82cd8356837483674a495382c58f9182a982ea"
+			"82c482a282dc82b781420a"));
+		const QString japaneseUtf8 = dir.filePath(QStringLiteral("japanese8.txt"));
+		write(japaneseUtf8, QString::fromUtf8("\xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1"
+			"\xe3\x81\xaf\xe4\xb8\x96\xe7\x95\x8c\xe3\x80\x82\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"
+			"\xe3\x81\xae\xe3\x83\x86\xe3\x82\xad\xe3\x82\xb9\xe3\x83\x88\xe3\x81\xa7\xe3\x81\x99"
+			"\xe3\x80\x82\n\xe3\x81\x93\xe3\x82\x8c\xe3\x81\xaf\xe3\x82\xb7\xe3\x83\x95\xe3\x83\x88"
+			"JIS\xe3\x81\xa7\xe6\x9b\xb8\xe3\x81\x8b\xe3\x82\x8c\xe3\x81\xa6\xe3\x81\x84\xe3\x81\xbe"
+			"\xe3\x81\x99\xe3\x80\x82\n").toUtf8());
+		const auto sameText = [&error, &show](const QString &a, const QString &b) {
+			FileCompareView view;
+			const bool compared = view.compare(a, b, &error);
+			show(qPrintable(QFileInfo(a).fileName()), view);
+			return compared && view.diffCount() == 0;
+		};
+		check(!sameText(french, frenchUtf8) && !sameText(japanese, japaneseUtf8),
+			"detector off: Latin-1 and Shift_JIS do not read as such");
+		// read as UTF-8, each 8-bit byte goes alone, the text after it kept
+		{
+			FileCompareView view;
+			if (!view.compare(french, frenchUtf8, &error))
+				return 2;
+			check(view.realLinesForTest(0).value(0) == QStringLiteral("Le caf? de la gare a ferm? ce soir.")
+					&& view.realLinesForTest(0).size() == 3,
+				"detector off: a byte that is no UTF-8 reads as ?, the text after it kept");
+		}
+		mgr->Set(OPT_CP_DETECT, (50001 << 16) | 2);
+		check(sameText(french, frenchUtf8) && sameText(japanese, japaneseUtf8),
+			"detector, Auto-Select: Latin-1 and Shift_JIS detected");
+		mgr->Set(OPT_CP_DETECT, (50932 << 16) | 2);
+		check(!sameText(french, frenchUtf8) && sameText(japanese, japaneseUtf8),
+			"detector, Japanese (Auto-Select): Japanese's encodings only");
+		mgr->Set(OPT_CP_DETECT, (50001 << 16) | 1);
+
+		// the Unicode files the engine decodes itself, UTF-16 and UTF-8
+		// with a BOM, with characters of three and four bytes in UTF-8
+		const QString wide = QString::fromUtf8("\xe2\x82\xac \xe2\x80\x9cquotes\xe2\x80\x9d "
+			"\xe3\x81\x93\xe3\x82\x93 \xf0\x9f\x98\x80\n");
+		const auto utf16le = [](const QString &text) {
+			QByteArray bytes("\xff\xfe", 2);
+			bytes.append(reinterpret_cast<const char *>(text.utf16()), text.size() * 2);
+			return bytes;
+		};
+		const QString utf16 = dir.filePath(QStringLiteral("utf16.txt"));
+		write(utf16, utf16le(wide));
+		const QString utf8Bom = dir.filePath(QStringLiteral("utf8bom.txt"));
+		write(utf8Bom, "\xef\xbb\xbf" + wide.toUtf8());
+		const QString utf8Wide = dir.filePath(QStringLiteral("utf8wide.txt"));
+		write(utf8Wide, wide.toUtf8());
+		check(sameText(utf16, utf8Wide) && sameText(utf8Bom, utf8Wide),
+			"Unicode: UTF-16 and UTF-8 with a BOM read as the same text, emoji too");
+		{
+			FileCompareView view;
+			if (!view.compare(utf16, utf8Wide, &error))
+				return 2;
+			view.typeAtForTest(0, 0, QStringLiteral("x"));
+			check(view.saveSideAt(0, &error) && read(utf16) == utf16le(QStringLiteral("x") + wide),
+				"Unicode: UTF-16 saved as UTF-16, emoji too");
+		}
+
+		// -cp: the default codepage for the run, the comparison exiting 0
+		// with it (the codepage difference ignored) and 1 without it
+		using Cmd = lm::CommandLine;
+		// after a colon the value keeps it, which upstream's atoi reads as
+		// none
+		check(Cmd::parse({ QStringLiteral("-cp"), QStringLiteral("1252") }).codepage == 1252
+				&& Cmd::parse({ QStringLiteral("-CP"), QStringLiteral("1250") }).codepage == 1250
+				&& Cmd::parse({ QStringLiteral("-cp:1250") }).codepage == 0
+				&& Cmd::parse({ QStringLiteral("-cp"), QStringLiteral("1252") }).unsupported.isEmpty()
+				&& Cmd::parse({ latin }).codepage == 0,
+			"-cp: its value, the next argument");
+		const auto run = [](const QStringList &arguments) {
+			QProcess process;
+			process.start(QCoreApplication::applicationFilePath(), arguments);
+			if (!process.waitForFinished(60000))
+			{
+				process.kill();
+				process.waitForFinished();
+				return -100;
+			}
+			return process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -101;
+		};
+		const QStringList unattended = { QStringLiteral("-noninteractive"),
+			QStringLiteral("-enableexitcode"), QStringLiteral("-noprefs"),
+			QStringLiteral("-ignorecodepage:1") };
+		const int withCp = run(unattended + QStringList{ QStringLiteral("-cp"), QStringLiteral("1252"), latin, utf8 });
+		const int withoutCp = run(unattended + QStringList{ latin, utf8 });
+		printf("  -cp 1252 exits %d, without it %d\n", withCp, withoutCp);
+		check(withCp == 0 && withoutCp == 1,
+			"-cp: the files read in it for the run");
+
+		printf("codepage: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestEolOpt))
+	{
+		// the line endings as WinMerge keeps them with "Preserve original
+		// EOL" off: a file whose lines end in more than one way saved with
+		// each line's own, the lines copied into it taking theirs along
+		// (and back with an undo); the engine handed the real endings, so
+		// files that end their lines otherwise differ, and the question
+		// that offers to treat them as the same (IDS_SUGGEST_IGNOREEOL),
+		// for the comparison or, the answer kept, from then on; and a file
+		// that ends without a line break
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		QStringList asked;
+		bool answer = false;
+		bool keep = false;
+		lm::setQuestionSinkForTest([&](const QString &text, bool *dontAskAgain) {
+			asked << text;
+			if (dontAskAgain != nullptr)
+				*dontAskAgain = keep;
+			return answer;
+		});
+		const QString question = QCoreApplication::translate("MessageBoxes",
+			"Files use different EOL.\n\nTreat all EOL as equivalent?\n\n"
+			"Set 'Ignore EOL differences (Windows/Unix/Mac)' in Compare section of Options.");
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		QString error;
+
+		// mixed endings on both sides: no question, and the lines that end
+		// otherwise are differences
+		write(left, "a\r\nb\nc\r\n");
+		write(right, "a\r\nx\r\nc\n");
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(asked.isEmpty() && view.mixedEolForTest(0) && view.mixedEolForTest(1)
+					&& view.encodingTextForTest(0).endsWith(FileCompareView::tr("Mixed")),
+				"mixed endings: no question, Mixed in the status bar");
+			check(view.diffCount() == 1 && view.diffLinesForTest() == QList<int>({ 1, 2 }),
+				"mixed endings: a line that ends otherwise differs");
+			view.typeAtForTest(0, 0, QStringLiteral("z"));
+			check(view.saveSideAt(0, &error) && read(left) == "za\r\nb\nc\r\n",
+				"mixed endings: saved with each line's own");
+			view.copyAllFrom(1, 0);
+			check(view.saveSideAt(0, &error) && read(left) == read(right),
+				"mixed endings: the lines copied in take theirs along");
+			view.undoActive();
+			check(view.saveSideAt(0, &error) && read(left) == "za\r\nb\nc\r\n",
+				"mixed endings: undone, the lines end as before");
+			// a line typed in ends as the one it was split from
+			DiffTextEdit *pane = view.paneForTest(0);
+			QTextCursor cursor(pane->document()->findBlockByNumber(1));
+			cursor.movePosition(QTextCursor::EndOfBlock);
+			pane->setTextCursor(cursor);
+			QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+			QApplication::sendEvent(pane, &enter);
+			check(view.saveSideAt(0, &error) && read(left) == "za\r\nb\n\nc\r\n",
+				"mixed endings: a line typed in ends as the one it was split from");
+		}
+
+		// Windows endings against Unix ones: every line differs, unless
+		// the question is answered Yes
+		write(left, "a\r\nb\r\n");
+		write(right, "a\nb\n");
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(asked == QStringList({ question }) && !view.ignoresEolForTest()
+					&& view.diffCount() == 1 && view.diffLinesForTest() == QList<int>({ 0, 1 })
+					&& view.encodingTextForTest(0).endsWith(QStringLiteral("Win"))
+					&& view.encodingTextForTest(1).endsWith(QStringLiteral("Unix")),
+				"Win against Unix: asked, No leaves every line different");
+		}
+		asked.clear();
+		answer = true;
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(asked.size() == 1 && view.ignoresEolForTest() && view.diffCount() == 0
+					&& !lm::currentDiffOptions().bIgnoreEol,
+				"Win against Unix: Yes treats them as the same, in this comparison only");
+			view.refreshDiffOptions();
+			view.recompare();
+			check(asked.size() == 1 && !view.ignoresEolForTest() && view.diffCount() == 1,
+				"the options again: the Yes goes, and comparing again does not ask");
+			view.reload(&error);
+			check(asked.size() == 2 && view.ignoresEolForTest() && view.diffCount() == 0,
+				"File > Reload asks again");
+		}
+		asked.clear();
+		keep = true;
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(asked.size() == 1 && view.diffCount() == 0
+					&& lm::currentDiffOptions().bIgnoreEol,
+				"Yes kept: the option is set");
+		}
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(asked.size() == 1 && view.diffCount() == 0,
+				"Yes kept: no question from then on");
+		}
+		lm::setCompareFlagForTest(OPT_CMP_IGNORE_EOL, false);
+		lm::resetHiddenMessages();
+		asked.clear();
+		answer = false;
+		keep = false;
+
+		// a file that ends without a line break differs from one that ends
+		// with it, unless "Ignore missing trailing EOL" is on, and is saved
+		// without one
+		write(left, "a\nb");
+		write(right, "a\nb\n");
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(asked.isEmpty() && view.diffCount() == 1
+					&& view.diffLinesForTest() == QList<int>({ 1 }),
+				"no line break at the end: the last line differs");
+			view.typeAtForTest(0, 0, QStringLiteral("q"));
+			check(view.saveSideAt(0, &error) && read(left) == "qa\nb",
+				"no line break at the end: saved without one");
+		}
+		lm::setCompareFlagForTest(OPT_CMP_IGNORE_MISSING_TRAILING_EOL, true);
+		write(left, "a\nb");
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(view.diffCount() == 0, "Ignore missing trailing EOL: the same");
+		}
+		lm::setCompareFlagForTest(OPT_CMP_IGNORE_MISSING_TRAILING_EOL, false);
+
+		// an untitled pane is one line without a line break (InitNew)
+		write(right, "a\n");
+		{
+			FileCompareView view;
+			if (!view.compare({ QString(), right }, &error))
+				return 2;
+			// on its line, past the ghost line the right's line puts above it
+			view.typeAtForTest(0, view.paneForTest(0)->document()->blockCount() - 1,
+				QStringLiteral("a"));
+			view.recompare();
+			check(asked.isEmpty() && view.realLinesForTest(0) == QStringList({ QStringLiteral("a") })
+					&& view.diffCount() == 1 && view.diffLinesForTest() == QList<int>({ 0 }),
+				"untitled: its line has no line break");
+		}
+
+		// the table compare likewise: rows of mixed endings kept and taken
+		// along, and the question for files that end their rows otherwise
+		const QString leftTable = dir.filePath(QStringLiteral("left.csv"));
+		const QString rightTable = dir.filePath(QStringLiteral("right.csv"));
+		write(leftTable, "id,name\r\n1,a\n2,b\r\n");
+		write(rightTable, "id,name\r\n1,a\r\n2,b\n");
+		{
+			TableCompareView view;
+			if (!view.compare(leftTable, rightTable, &error))
+				return 2;
+			check(asked.isEmpty() && view.mixedEolForTest(0) && view.mixedEolForTest(1)
+					&& view.diffCount() == 1 && view.diffRowsForTest() == QList<int>({ 1, 2 }),
+				"table, mixed endings: no question, rows that end otherwise differ");
+			view.copyAllFrom(1, 0);
+			check(view.saveModified(&error) && read(leftTable) == read(rightTable),
+				"table, mixed endings: the rows copied in take theirs along");
+			view.undo();
+			check(view.saveModified(&error) && read(leftTable) == "id,name\r\n1,a\n2,b\r\n",
+				"table, mixed endings: undone and saved with each row's own");
+		}
+		write(leftTable, "id\r\n1\r\n");
+		write(rightTable, "id\n1\n");
+		{
+			TableCompareView view;
+			if (!view.compare(leftTable, rightTable, &error))
+				return 2;
+			check(asked == QStringList({ question }) && !view.ignoresEolForTest()
+					&& view.diffCount() == 1 && view.diffRowsForTest() == QList<int>({ 0, 1 }),
+				"table, Win against Unix: asked, No leaves every row different");
+		}
+		answer = true;
+		{
+			TableCompareView view;
+			if (!view.compare(leftTable, rightTable, &error))
+				return 2;
+			check(asked.size() == 2 && view.ignoresEolForTest() && view.diffCount() == 0,
+				"table, Win against Unix: Yes treats them as the same");
+			view.refreshDiffOptions();
+			view.recompare();
+			check(!view.ignoresEolForTest() && view.diffCount() == 1,
+				"table: the options again, and the Yes goes");
+		}
+		answer = false;
+		asked.clear();
+
+		// "Preserve original EOL" (OPT_ALLOW_MIXED_EOL): off by default on
+		// the Editor page; off, the lines copied into a file of one ending
+		// take its ending as it is saved, and the status bar names no line
+		// ending
+		{
+			OptionsDialog dialog;
+			auto *preserve = dialog.pageForTest(OptionsDialog::EditorPage)
+				->findChild<QCheckBox *>(QStringLiteral("mixedEol"));
+			if (preserve == nullptr)
+				return 2;
+			const bool wasOff = !preserve->isChecked();
+			preserve->setChecked(true);
+			dialog.saveForTest();
+			const bool saved = lm::allowMixedEol();
+			dialog.selectCategoryForTest(9); // Editor > General
+			dialog.restoreDefaultsForTest();
+			check(wasOff && saved && !preserve->isChecked(),
+				"Preserve original EOL: off by default, saved, off again with Defaults");
+			lm::setAllowMixedEolForTest(false);
+		}
+		const auto status = [](int ln, int col, int cols, int ch, int chs, const QString &eol)
+		{
+			return eol.isNull()
+				? FileCompareView::tr("Ln: %1  Col: %2/%3  Ch: %4/%5")
+					.arg(ln).arg(col).arg(cols).arg(ch).arg(chs)
+				: FileCompareView::tr("Ln: %1  Col: %2/%3  Ch: %4/%5  EOL: %6")
+					.arg(ln).arg(col).arg(cols).arg(ch).arg(chs).arg(eol);
+		};
+		const auto toLine = [](FileCompareView &view, int side, int line)
+		{
+			DiffTextEdit *pane = view.paneForTest(side);
+			pane->setTextCursor(QTextCursor(pane->document()->findBlockByNumber(line)));
+		};
+		write(left, "a\r\nb\r\n");
+		write(right, "a\nx\n");
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			view.copyAllFrom(1, 0);
+			toLine(view, 0, 0);
+			check(view.saveSideAt(0, &error) && read(left) == "a\r\nx\r\n"
+					&& view.positionTextForTest(0) == status(1, 1, 2, 1, 2, QString()),
+				"Preserve original EOL off: the lines copied in end as the file does");
+		}
+		// a ghost line gives the lines it is between (OnUpdateCaret), a
+		// selection its lines and characters, and the encoding is named as
+		// the engine's table has it (CMergeStatusBar)
+		write(left, "a\nb\nc\n");
+		write(right, "a\nc\n");
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			toLine(view, 1, 1);
+			printf("  on a ghost line: %s\n", qPrintable(view.positionTextForTest(1)));
+			check(view.positionTextForTest(1) == FileCompareView::tr("Line: %1").arg(QStringLiteral("1-2")),
+				"status bar, on a ghost line: the lines it is between");
+			view.selectForTest(0, 0, 0, 1, 1);
+			printf("  a selection: %s\n", qPrintable(view.positionTextForTest(0)));
+			check(view.positionTextForTest(0) == status(2, 2, 2, 2, 2, QString())
+					+ FileCompareView::tr("  Sel: %1 | %2").arg(2).arg(3),
+				"status bar, a selection: its lines and characters");
+			view.selectForTest(0, 0, 0, 1, 0);
+			check(view.positionTextForTest(0) == status(2, 1, 2, 1, 2, QString())
+					+ FileCompareView::tr("  Sel: %1 | %2").arg(1).arg(2),
+				"status bar, up to the next line's start: that line not counted");
+			toLine(view, 0, 0);
+			check(view.positionTextForTest(0) == status(1, 1, 2, 1, 2, QString()),
+				"status bar, no selection: no count");
+		}
+		write(left, QByteArray::fromHex("efbbbf610a"));
+		write(right, QByteArray::fromHex("fffe61000a00"));
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			printf("  encodings: %s | %s\n", qPrintable(view.encodingTextForTest(0)),
+				qPrintable(view.encodingTextForTest(1)));
+			check(view.encodingTextForTest(0).startsWith(QStringLiteral("UTF-8 BOM"))
+					&& view.encodingTextForTest(1).startsWith(QStringLiteral("ISO-10646-UCS-2 BOM")),
+				"status bar: the encodings as the engine's table names them");
+		}
+		write(right, "a\nx\n");
+		asked.clear();
+		lm::setAllowMixedEolForTest(true);
+		write(left, "a\r\nb\r\n");
+		{
+			// on: no question, the lines that end otherwise differ, those
+			// copied in keep theirs, and the status bar names each one's
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(asked.isEmpty() && view.diffCount() == 1
+					&& view.diffLinesForTest() == QList<int>({ 0, 1 }),
+				"Preserve original EOL on: no question, every line differs");
+			toLine(view, 0, 0);
+			const bool crlf = view.positionTextForTest(0) == status(1, 1, 2, 1, 2, QStringLiteral("CRLF"));
+			view.copyAllFrom(1, 0);
+			toLine(view, 0, 1);
+			check(crlf && view.saveSideAt(0, &error) && read(left) == "a\nx\n"
+					&& view.positionTextForTest(0) == status(2, 1, 2, 1, 2, QStringLiteral("LF")),
+				"Preserve original EOL on: the lines copied in keep theirs, named in the status bar");
+		}
+		write(left, "a\nb");
+		{
+			FileCompareView view;
+			if (!view.compare(left, right, &error))
+				return 2;
+			toLine(view, 0, 1);
+			check(view.positionTextForTest(0) == status(2, 1, 2, 1, 2, FileCompareView::tr("None")),
+				"Preserve original EOL on: a last line without one ends in None");
+		}
+		write(leftTable, "id\r\n1\r\n");
+		write(rightTable, "id\n2\n");
+		{
+			TableCompareView view;
+			if (!view.compare(leftTable, rightTable, &error))
+				return 2;
+			view.copyAllFrom(1, 0);
+			check(asked.isEmpty() && view.saveModified(&error) && read(leftTable) == "id\n2\n",
+				"Preserve original EOL on, table: the rows copied in keep theirs");
+		}
+		lm::setAllowMixedEolForTest(false);
+
+		lm::setQuestionSinkForTest([](const QString &, bool *) { return false; });
+		printf("eol: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestEditorTabsOpt))
+	{
+		// WinMerge's tabs (Options > Editor): the page's field and its
+		// warning, the tab stops of the panes and of the diff pane, the
+		// column in the status bar, and the Tab and Shift+Tab keys
+		// (CCrystalEditView::OnEditTab, OnEditUntab) on a line, on the
+		// lines of a selection, a ghost line among them, and on the cursor
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 50; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		const auto press = [](QWidget *widget, int key,
+			Qt::KeyboardModifiers mods = Qt::NoModifier, const QString &text = QString())
+		{
+			QKeyEvent event(QEvent::KeyPress, key, mods, text);
+			QApplication::sendEvent(widget, &event);
+		};
+		const auto leave = [](QWidget *widget, Qt::FocusReason reason)
+		{
+			QFocusEvent focus(QEvent::FocusOut, reason);
+			QApplication::sendEvent(widget, &focus);
+		};
+		QStringList messages;
+		lm::setMessageSinkForTest([&messages](const QString &text) { messages << text; });
+
+		// the page: 4 and tabs by default; a size out of range told as the
+		// field is left, and kept within range as it is saved
+		{
+			OptionsDialog dialog;
+			QWidget *page = dialog.pageForTest(OptionsDialog::EditorPage);
+			auto *size = page->findChild<QLineEdit *>(QStringLiteral("tabSize"));
+			auto *tabs = page->findChild<QRadioButton *>(QStringLiteral("insertTabs"));
+			auto *spaces = page->findChild<QRadioButton *>(QStringLiteral("insertSpaces"));
+			if (size == nullptr || tabs == nullptr || spaces == nullptr)
+				return 2;
+			check(size->text() == QStringLiteral("4") && tabs->isChecked() && !spaces->isChecked(),
+				"page: a tab size of 4 and Insert tabs by default");
+			const QString outOfRange =
+				OptionsDialog::tr("Tab size value is out of range. Please use 1 - %1.").arg(64);
+			size->setText(QStringLiteral("70"));
+			leave(size, Qt::TabFocusReason);
+			size->setText(QStringLiteral("0"));
+			leave(size, Qt::MouseFocusReason);
+			check(messages == QStringList({ outOfRange, outOfRange }),
+				"page: 70 and 0 told out of range as the field is left");
+			messages.clear();
+			size->setText(QStringLiteral("8"));
+			leave(size, Qt::TabFocusReason);
+			size->setText(QStringLiteral("99"));
+			leave(size, Qt::ActiveWindowFocusReason);
+			leave(size, Qt::OtherFocusReason);
+			check(messages.isEmpty(),
+				"page: nothing told for 8, nor as the window goes to the back or closes");
+			dialog.saveForTest();
+			check(lm::tabSize() == 64 && lm::insertTabs(), "page: 99 saved as 64");
+			size->setText(QStringLiteral("0"));
+			spaces->setChecked(true);
+			dialog.saveForTest();
+			check(lm::tabSize() == 1 && !lm::insertTabs(), "page: 0 saved as 1, and Insert spaces");
+			dialog.selectCategoryForTest(9); // Editor > General
+			dialog.restoreDefaultsForTest();
+			check(size->text() == QStringLiteral("4") && tabs->isChecked(),
+				"page: Defaults bring 4 and Insert tabs back");
+			messages.clear();
+		}
+
+		// the left pane: a tab, a ghost line (the right has a line more),
+		// then two lines
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		write(left, "\tab\nline two\nthree\n");
+		write(right, "\tab\nextra\nline two\nthree\n");
+		lm::setTabsForTest(8, true);
+		FileCompareView view;
+		QString error;
+		if (!view.compare(left, right, &error))
+			return 2;
+		view.resize(900, 400);
+		view.show();
+		settle();
+		DiffTextEdit *pane = view.paneForTest(0);
+		QTextDocument *doc = pane->document();
+		const auto line = [doc](int viewLine) { return doc->findBlockByNumber(viewLine); };
+		const auto place = [pane, &line](int viewLine, int pos, int anchorLine = -1, int anchorPos = 0)
+		{
+			QTextCursor cursor(pane->document());
+			if (anchorLine >= 0)
+				cursor.setPosition(line(anchorLine).position() + anchorPos);
+			cursor.setPosition(line(viewLine).position() + pos,
+				anchorLine >= 0 ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
+			pane->setTextCursor(cursor);
+		};
+		const auto position = [](int ln, int col, int cols, int ch, int chs)
+		{
+			return FileCompareView::tr("Ln: %1  Col: %2/%3  Ch: %4/%5")
+				.arg(ln).arg(col).arg(cols).arg(ch).arg(chs);
+		};
+		check(isGhostBlock(line(1)) && line(2).text() == QStringLiteral("line two"),
+			"the left pane has a ghost line");
+
+		const qreal space = QFontMetricsF(pane->font()).horizontalAdvance(QLatin1Char(' '));
+		QPlainTextEdit *diffPane = view.diffPaneEditForTest(0);
+		const qreal diffSpace =
+			QFontMetricsF(diffPane->font()).horizontalAdvance(QLatin1Char(' '));
+		check(qAbs(pane->tabStopDistance() - 8 * space) < 0.01
+				&& qAbs(diffPane->tabStopDistance() - 8 * diffSpace) < 0.01,
+			"tab size 8: the tab stops of the panes and of the diff pane");
+		// the column takes the tab to its stop, the character does not
+		place(0, 2);
+		check(view.positionTextForTest(0) == position(1, 10, 11, 3, 4),
+			"status bar: Col 10/11, Ch 3/4 after a tab and a character");
+		lm::setTabsForTest(4, true);
+		view.refreshEditorOptions();
+		check(qAbs(pane->tabStopDistance() - 4 * space) < 0.01
+				&& view.positionTextForTest(0) == position(1, 6, 7, 3, 4),
+			"the options again: a tab size of 4 at once");
+
+		// Insert tabs: a tab at the cursor
+		place(2, 4);
+		press(pane, Qt::Key_Tab, Qt::NoModifier, QStringLiteral("\t"));
+		check(line(2).text() == QStringLiteral("line\t two")
+				&& pane->textCursor().positionInBlock() == 5,
+			"Tab: a tab at the cursor");
+		// Insert spaces: up to the next tab stop, from the cursor's column
+		// (column 5, after the tab: three spaces, where upstream's count
+		// from the character would give two)
+		lm::setTabsForTest(4, false);
+		view.refreshEditorOptions();
+		place(0, 2);
+		press(pane, Qt::Key_Tab, Qt::NoModifier, QStringLiteral("\t"));
+		check(line(0).text() == QStringLiteral("\ta   b")
+				&& pane->textCursor().positionInBlock() == 5,
+			"Tab with Insert spaces: spaces to the next tab stop");
+
+		// a selection over lines: each one indented, the ghost line left
+		// alone, as one undo step; the selection then takes the whole lines
+		int undoSteps = 0;
+		const QMetaObject::Connection undoCounter = QObject::connect(doc,
+			&QTextDocument::undoCommandAdded, [&undoSteps]() { ++undoSteps; });
+		place(2, 3, 0, 1);
+		press(pane, Qt::Key_Tab, Qt::NoModifier, QStringLiteral("\t"));
+		check(line(0).text() == QStringLiteral("    \ta   b") && isGhostBlock(line(1))
+				&& line(2).text() == QStringLiteral("    line\t two")
+				&& line(3).text() == QStringLiteral("three"),
+			"Tab over lines: each indented, the ghost line left alone");
+		QObject::disconnect(undoCounter);
+		check(undoSteps == 1, "Tab over lines: one undo step");
+		check(pane->textCursor().selectionStart() == line(0).position()
+				&& pane->textCursor().selectionEnd() == line(3).position(),
+			"Tab over lines: the whole lines selected");
+		// Shift+Tab over them: a tab's worth of spaces, then the tab
+		press(pane, Qt::Key_Backtab, Qt::ShiftModifier);
+		check(line(0).text() == QStringLiteral("\ta   b")
+				&& line(2).text() == QStringLiteral("line\t two"),
+			"Shift+Tab over lines: four spaces each");
+		press(pane, Qt::Key_Backtab, Qt::ShiftModifier);
+		check(line(0).text() == QStringLiteral("a   b")
+				&& line(2).text() == QStringLiteral("line\t two"),
+			"Shift+Tab over lines: then the tab, the line without one left as it is");
+		// spaces short of a tab's worth, then a tab: all of them go
+		view.typeAtForTest(0, 3, QStringLiteral("  \t"));
+		place(3, 2, 2, 0);
+		press(pane, Qt::Key_Backtab, Qt::ShiftModifier);
+		check(line(3).text() == QStringLiteral("three")
+				&& pane->textCursor().selectionEnd() == line(3).position() + line(3).length() - 1,
+			"Shift+Tab: two spaces and a tab; the selection to the text's end");
+		// without a selection, the cursor goes back to the tab stop before
+		// it: past "line\t two" (column 12) to 8, after the tab, then to 4
+		place(2, 9);
+		press(pane, Qt::Key_Backtab, Qt::ShiftModifier);
+		const int afterTab = pane->textCursor().positionInBlock();
+		press(pane, Qt::Key_Backtab, Qt::ShiftModifier);
+		check(afterTab == 5 && pane->textCursor().positionInBlock() == 4
+				&& line(2).text() == QStringLiteral("line\t two"),
+			"Shift+Tab: the cursor back to the tab stops, the text untouched");
+
+		settle();
+		check(view.realLinesForTest(0)
+				== QStringList({ QStringLiteral("a   b"), QStringLiteral("line\t two"),
+					QStringLiteral("three") }),
+			"the lines as edited, once compared again");
+		check(messages.isEmpty(), "no message on the way");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestTreeSitterOpt))
+	{
+		// WinMerge's highlighting of the languages its built-in parsers
+		// lack, through Tree-sitter ("Built-in first"): a YAML file's
+		// colors, which follow the text as it changes (the line typed in at
+		// once, the lines it affects once the typing stops), TOML and a
+		// YAML block inside Markdown, and the built-in parsers where they
+		// have the language
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 50; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		// the color a character of a line was given, and a color index's
+		const auto colorAt = [](FileCompareView &view, int side, int line, int pos)
+		{
+			const QTextBlock block = view.paneForTest(side)->document()->findBlockByNumber(line);
+			for (const QTextLayout::FormatRange &range : block.layout()->formats())
+				if (pos >= range.start && pos < range.start + range.length)
+					return range.format.foreground().color();
+			return QColor();
+		};
+		const auto color = [](FileCompareView &view, int side, int index)
+		{
+			return view.highlighterForTest(side)->formatForTest(index).foreground().color();
+		};
+
+		const QString leftYaml = dir.filePath(QStringLiteral("left.yaml"));
+		const QString rightYaml = dir.filePath(QStringLiteral("right.yaml"));
+		write(leftYaml, "name: \"MergeDesk\"  # the app\ncount: 3\n");
+		write(rightYaml, "name: \"MergeDesk\"  # the app\ncount: 4\n");
+		{
+			FileCompareView view;
+			QString error;
+			if (!view.compare(leftYaml, rightYaml, &error))
+				return 2;
+			view.resize(900, 400);
+			view.show();
+			settle();
+			check(view.highlighterForTest(0)->treeSitterForTest()
+					&& view.highlighterForTest(1)->treeSitterForTest()
+					&& view.highlighterForTest(0)->languageName() == QStringLiteral("YAML"),
+				"YAML: Tree-sitter colors both panes");
+			check(colorAt(view, 0, 0, 0) == color(view, 0, COLORINDEX_USER1)
+					&& colorAt(view, 0, 0, 6) == color(view, 0, COLORINDEX_STRING)
+					&& colorAt(view, 0, 0, 20) == color(view, 0, COLORINDEX_COMMENT)
+					&& colorAt(view, 1, 1, 7) == color(view, 1, COLORINDEX_NUMBER),
+				"YAML: keys, strings, comments and numbers");
+			view.typeAtForTest(0, 1, QStringLiteral("# "));
+			check(colorAt(view, 0, 1, 2) == color(view, 0, COLORINDEX_COMMENT),
+				"YAML: the line typed in takes its colors at once");
+		}
+
+		// a multi-line string closed on the third line: the second is in it
+		// (colored as the string, the inner of the captures holding it),
+		// until the opening line becomes a comment
+		const QString leftToml = dir.filePath(QStringLiteral("left.toml"));
+		const QString rightToml = dir.filePath(QStringLiteral("right.toml"));
+		write(leftToml, "s = \"\"\"\nb = 2\n\"\"\"\n");
+		write(rightToml, "s = \"\"\"\nb = 3\n\"\"\"\n");
+		{
+			FileCompareView view;
+			QString error;
+			if (!view.compare(leftToml, rightToml, &error))
+				return 2;
+			view.resize(900, 400);
+			view.show();
+			settle();
+			check(view.highlighterForTest(0)->treeSitterForTest()
+					&& colorAt(view, 0, 1, 0) == color(view, 0, COLORINDEX_STRING)
+					&& colorAt(view, 0, 1, 4) == color(view, 0, COLORINDEX_STRING),
+				"TOML: the line inside the multi-line string is no pair of its own");
+			view.typeAtForTest(0, 0, QStringLiteral("# "));
+			settle();
+			check(colorAt(view, 0, 0, 0) == color(view, 0, COLORINDEX_COMMENT)
+					&& colorAt(view, 0, 1, 0) == color(view, 0, COLORINDEX_USER1)
+					&& colorAt(view, 0, 1, 4) == color(view, 0, COLORINDEX_NUMBER),
+				"TOML: once the typing stops, the lines below follow the edit");
+		}
+
+		const QString leftMd = dir.filePath(QStringLiteral("left.md"));
+		const QString rightMd = dir.filePath(QStringLiteral("right.md"));
+		write(leftMd, "# Title\n\n```yaml\nkey: 1 # note\n```\n");
+		write(rightMd, "# Title\n\n```yaml\nkey: 2 # note\n```\n");
+		{
+			FileCompareView view;
+			QString error;
+			if (!view.compare(leftMd, rightMd, &error))
+				return 2;
+			view.resize(900, 400);
+			view.show();
+			settle();
+			check(view.highlighterForTest(0)->treeSitterForTest()
+					&& colorAt(view, 0, 3, 7) == color(view, 0, COLORINDEX_COMMENT),
+				"Markdown: a YAML block takes YAML's colors");
+		}
+
+		// a language of the built-in parsers keeps them
+		const QString leftPy = dir.filePath(QStringLiteral("left.py"));
+		const QString rightPy = dir.filePath(QStringLiteral("right.py"));
+		write(leftPy, "def f():\n    return 1  # one\nraise ValueError\n");
+		write(rightPy, "def f():\n    return 2  # two\nraise ValueError\n");
+		{
+			FileCompareView view;
+			QString error;
+			if (!view.compare(leftPy, rightPy, &error))
+				return 2;
+			view.resize(900, 400);
+			view.show();
+			settle();
+			check(view.highlighterForTest(0)->hasLanguage()
+					&& !view.highlighterForTest(0)->treeSitterForTest()
+					&& colorAt(view, 0, 1, 14) == color(view, 0, COLORINDEX_COMMENT),
+				"Python: the built-in parser, as WinMerge's \"Built-in first\"");
+			// its User 1 color (a built-in exception), past the 16 the
+			// formats once stopped at
+			check(colorAt(view, 0, 2, 6) == color(view, 0, COLORINDEX_USER1)
+					&& color(view, 0, COLORINDEX_USER1).isValid(),
+				"Python: the User 1 color of the built-in parser");
+
+			// WinMerge's Editor page: the highlight mode orders the parsers,
+			// for the files already open too (CMergeEditView::RefreshOptions),
+			// and "Highlight syntax" off leaves the text plain
+			lm::setSyntaxHighlightForTest(true, 2); // Tree-sitter first
+			view.refreshSyntaxHighlighting();
+			settle();
+			check(view.highlighterForTest(0)->treeSitterForTest()
+					&& colorAt(view, 0, 1, 14) == color(view, 0, COLORINDEX_COMMENT),
+				"Tree-sitter first: Python by Tree-sitter");
+			lm::setSyntaxHighlightForTest(true, 0); // Built-in only
+			view.refreshSyntaxHighlighting();
+			check(view.highlighterForTest(0)->hasLanguage()
+					&& !view.highlighterForTest(0)->treeSitterForTest(),
+				"Built-in only: Python by its built-in parser");
+			lm::setSyntaxHighlightForTest(false, 1);
+			view.refreshSyntaxHighlighting();
+			settle();
+			check(!view.highlighterForTest(0)->hasLanguage()
+					&& colorAt(view, 0, 1, 14) == QColor(),
+				"Highlight syntax off: plain text");
+		}
+		{
+			const QString leftSql = dir.filePath(QStringLiteral("left.sql"));
+			const QString rightSql = dir.filePath(QStringLiteral("right.sql"));
+			write(leftSql, "SELECT 1; -- one\n");
+			write(rightSql, "SELECT 2; -- two\n");
+			QString error;
+			lm::setSyntaxHighlightForTest(true, 0); // Built-in only
+			FileCompareView yaml;
+			if (!yaml.compare(leftYaml, rightYaml, &error))
+				return 2;
+			check(!yaml.highlighterForTest(0)->hasLanguage(),
+				"Built-in only: no parser for YAML");
+			lm::setSyntaxHighlightForTest(true, 3); // Tree-sitter only
+			FileCompareView sql;
+			if (!sql.compare(leftSql, rightSql, &error))
+				return 2;
+			check(!sql.highlighterForTest(0)->hasLanguage(),
+				"Tree-sitter only: no parser for SQL, which has no grammar");
+			lm::setSyntaxHighlightForTest(true, 1);
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestTableIgnoreColumnOpt))
+	{
+		// CMergeDoc::IgnoreColumnInComparison: the header menu leaves a
+		// column out by a ColumnRange("!N") line expression in the
+		// prediffer; without Ctrl it takes the place of the column left out
+		// before, with Ctrl it joins it, "In This Pane Only" is for one
+		// file (a column the others lack) and Reset All brings them back.
+		// The files themselves stay as they are.
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		const auto action = [](QMenu &menu, const char *name)
+		{
+			return menu.findChild<QAction *>(QLatin1String(name));
+		};
+		const QString left = dir.filePath(QStringLiteral("left.csv"));
+		const QString right = dir.filePath(QStringLiteral("right.csv"));
+		const QByteArray leftBytes = "id,name,price,stock\n1,apple,10,5\n2,pear,20,7\n3,plum,30,1\n";
+		const QByteArray rightBytes = "id,name,price,stock\n1,apple,11,5\n2,pear,20,7\n3,plum,30,2\n";
+		write(left, leftBytes);
+		write(right, rightBytes);
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(view.diffCount() == 2, "the price of one row and the stock of another differ");
+			{
+				QMenu menu;
+				view.buildHeaderMenu(0, -1, &menu);
+				QMenu *ignore = menu.findChild<QMenu *>(QStringLiteral("ignoreColumn"));
+				check(ignore != nullptr && !action(menu, "ignoreColumnInAllPanes")->isEnabled()
+						&& !action(menu, "ignoreColumnInThisPane")->isEnabled()
+						&& !action(menu, "ignoreColumnHint")->isEnabled()
+						&& action(menu, "ignoreColumnResetAll")->isEnabled(),
+					"past the last column the menu leaves nothing to ignore, Reset All aside");
+				// (in the system's language: the key's sign stays the same)
+#ifdef Q_OS_MACOS
+				check(action(menu, "ignoreColumnHint")->text().contains(QChar(0x2318)),
+					"the hint names the Command key on macOS");
+#else
+				check(!action(menu, "ignoreColumnHint")->text().contains(QChar(0x2318)),
+					"the hint names Ctrl");
+#endif
+			}
+			{
+				QMenu menu;
+				view.buildHeaderMenu(0, 2, &menu);
+				QAction *allPanes = action(menu, "ignoreColumnInAllPanes");
+				check(allPanes->isEnabled(), "a column clicked can be ignored");
+				allPanes->trigger();
+			}
+			printf("  pipeline: %s\n", qPrintable(view.prediffPipelineForTest()));
+			check(view.prediffPipelineForTest() == QStringLiteral("le:ColumnRange(\"!3\")")
+					&& view.diffCount() == 1 && !view.diffRowsForTest().contains(1),
+				"In All Panes leaves the price out: the stock is the one difference left");
+			view.ignoreColumnInComparison(3, QString(), true);
+			check(view.prediffPipelineForTest() == QStringLiteral("le:ColumnRange(\"!3,!4\")")
+					&& view.diffCount() == 0,
+				"Ctrl+Click adds the stock: no difference is left");
+			// upstream checks the specification as a whole against the
+			// column: in a list, the column goes in again, to no effect
+			view.ignoreColumnInComparison(3, QString(), true);
+			check(view.prediffPipelineForTest() == QStringLiteral("le:ColumnRange(\"!3,!4,!4\")")
+					&& view.diffCount() == 0,
+				"a column added again goes in twice, changing nothing");
+			view.ignoreColumnInComparison(1, QString(), false);
+			check(view.prediffPipelineForTest() == QStringLiteral("le:ColumnRange(\"!2\")")
+					&& view.diffCount() == 2,
+				"a click without Ctrl takes the place of the columns left out before");
+			{
+				QMenu menu;
+				view.buildHeaderMenu(1, 1, &menu);
+				action(menu, "ignoreColumnResetAll")->trigger();
+			}
+			check(view.prediffPipelineForTest().isEmpty() && view.diffCount() == 2,
+				"Reset All brings every column back");
+			check(!view.isModified() && read(left) == leftBytes && read(right) == rightBytes,
+				"the files stay as they were");
+		}
+
+		// a column one file has and the other lacks
+		write(left, "id,name,price\n1,apple,10\n2,pear,20\n");
+		write(right, "id,code,name,price\n1,A1,apple,10\n2,P2,pear,20\n");
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+				return 2;
+			check(view.diffCount() == 1, "the extra column makes every row differ");
+			{
+				QMenu menu;
+				view.buildHeaderMenu(1, 1, &menu);
+				action(menu, "ignoreColumnInThisPane")->trigger();
+			}
+			printf("  pipeline: %s\n", qPrintable(view.prediffPipelineForTest()));
+			check(view.prediffPipelineForTest() == QStringLiteral("le:2:ColumnRange(\"!2\")")
+					&& view.diffCount() == 0,
+				"In This Pane Only leaves the right file's column out, and the tables agree");
+			view.ignoreColumnInComparison(3, QStringLiteral("2"), true);
+			check(view.prediffPipelineForTest() == QStringLiteral("le:2:ColumnRange(\"!2,!4\")")
+					&& view.diffCount() == 1,
+				"Ctrl+Click adds another column of that file");
+			view.ignoreColumnInComparison(2, QString(), false);
+			check(view.prediffPipelineForTest()
+					== QStringLiteral("le:2:ColumnRange(\"!2,!4\")|le:ColumnRange(\"!3\")"),
+				"a column of every file goes in an item of its own");
+			view.resetIgnoredColumnsInComparison();
+			check(view.prediffPipelineForTest().isEmpty() && view.diffCount() == 1,
+				"Reset All takes both items");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestTable3WayOpt))
+	{
+		// three tables in three grids, as WinMerge compares three texts in
+		// its table mode: the rows aligned over the three, the differences
+		// of the one side that differs, the cells that differ on each, and
+		// the copies between any two sides with undo, the swap and the save
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		const QString left = dir.filePath(QStringLiteral("left.csv"));
+		const QString middle = dir.filePath(QStringLiteral("middle.csv"));
+		const QString right = dir.filePath(QStringLiteral("right.csv"));
+		// banana changed in the middle only, cherry in the right only, and
+		// a row the right one alone has at the end
+		const QByteArray base = "id,name,qty\n1,apple,10\n2,banana,20\n3,cherry,30\n4,date,40\n";
+		write(left, base);
+		write(middle, "id,name,qty\n1,apple,10\n2,banana,21\n3,cherry,30\n4,date,40\n");
+		write(right, "id,name,qty\n1,apple,10\n2,banana,20\n3,cherry,31\n4,date,40\n5,elder,50\n");
+
+		TableCompareView view;
+		QString error;
+		if (!view.compare(QStringList{ left, middle, right }, &error))
+		{
+			printf("compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		int textDiffs = -1;
+		{
+			FileCompareView text;
+			if (text.compare(QStringList{ left, middle, right }, &error))
+				textDiffs = text.diffCount();
+		}
+		view.resize(1200, 600);
+		view.show();
+		QCoreApplication::processEvents();
+		printf("  %d grids, %d difference(s), \"%s\"\n", view.paneCount(), view.diffCount(),
+			qPrintable(view.tabTitle()));
+		// the engine's three-way diff takes the right's two changes as one
+		check(view.paneCount() == 3 && view.diffCount() == 2 && textDiffs == 2
+				&& view.tabTitle() == QString::fromUtf8(
+					"left.csv \xE2\x86\x94 middle.csv \xE2\x86\x94 right.csv"),
+			"three tables, the differences the text comparison finds, the three names");
+		const QAbstractItemModel *leftModel = view.tableForTest(0)->model();
+		check(leftModel->rowCount() == 5 && view.tableForTest(2)->model()->rowCount() == 5
+				&& leftModel->index(4, 0).data().isNull()
+				&& view.tableForTest(2)->model()->index(4, 1).data().toString()
+					== QStringLiteral("elder"),
+			"the rows line up: the left and the middle have a filler where the right has its own");
+		check(view.cellDiffersForTest(1, 1, 2) && view.cellDiffersForTest(0, 1, 2)
+				&& view.cellDiffersForTest(2, 1, 2) && !view.cellDiffersForTest(1, 1, 1)
+				&& view.cellDiffersForTest(2, 2, 2) && !view.cellDiffersForTest(0, 2, 1),
+			"the cells that differ are marked on every side, the others are not");
+
+		// the middle's banana to the left, then to the right
+		view.gotoFirstDiff();
+		view.copyCurrentDiff(1, 0);
+		check(view.diffCount() == 2 && view.isModified(),
+			"Copy from the middle to the left: the right one still differs");
+		view.gotoFirstDiff();
+		view.copyCurrentDiff(1, 2);
+		check(view.diffCount() == 1, "and to the right: the three agree on banana");
+		view.undo();
+		check(view.diffCount() == 2, "Undo takes the right one's copy back");
+		view.redo();
+		check(view.diffCount() == 1, "and Redo makes it again");
+		check(view.saveModified(&error) && read(left).contains("2,banana,21")
+				&& read(right).contains("2,banana,21") && read(middle).contains("2,banana,21"),
+			"Save writes the left and the right files");
+
+		// Swap Panes trades the first side and the last
+		view.swapSides();
+		check(view.paths() == QStringList({ right, middle, left }),
+			"Swap Panes trades the left and the right tables");
+
+		// an untitled middle, and back to two tables in the same window
+		if (!view.compare(QStringList{ left, QString(), right }, &error))
+			return 2;
+		check(view.headerForTest(1)->originalText() == TableCompareView::tr("Untitled Middle"),
+			"a side without a file in the middle is the untitled middle one");
+		if (!view.compare(QStringList{ left, right }, &error))
+			return 2;
+		check(view.paneCount() == 2 && !view.tableForTest(2)->isVisible()
+				&& view.tabTitle() == QString::fromUtf8("left.csv \xE2\x86\x94 right.csv"),
+			"two tables again: the third grid goes");
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestImageOptionsOpt))
+	{
+		// WinMerge's Options > Compare > Image (PropCompareImage) and what
+		// its patterns drive (ShowAutoMergeDoc): the first file, in the
+		// panes' order, that the image patterns take opens the image
+		// comparison, or that the binary patterns take, the binary one.
+		// MergeDesk wanted every side to be an image, and read only the
+		// "*.ext" patterns of both lists.
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		// PNG images, under the names the patterns go by
+		QImage image(8, 8, QImage::Format_RGB32);
+		image.fill(Qt::red);
+		QImage changed = image;
+		changed.setPixelColor(1, 1, Qt::blue);
+		const QString png = dir.filePath(QStringLiteral("a.png"));
+		const QString pngAsBak = dir.filePath(QStringLiteral("b.bak"));
+		const QString pngAsBin = dir.filePath(QStringLiteral("c.bin"));
+		if (!image.save(png, "PNG") || !changed.save(pngAsBak, "PNG")
+			|| !changed.save(pngAsBin, "PNG"))
+			return 2;
+		const auto opens = [&settle](const QStringList &paths) {
+			MainWindow window;
+			window.openFileComparison(paths);
+			settle();
+			return window.findChild<ImageCompareView *>() != nullptr ? QStringLiteral("image")
+				: window.findChild<HexCompareView *>() != nullptr ? QStringLiteral("binary")
+				: QStringLiteral("other");
+		};
+
+		check(lm::isImageFile(png) && lm::isImageFile(dir.filePath(QStringLiteral("UPPER.PNG")))
+				&& !lm::isImageFile(pngAsBak) && !lm::isImageFile(QString()),
+			"WinMerge's defaults: a .png file is an image, in any case; .bak is not");
+		check(opens({ png, pngAsBak }) == QStringLiteral("image")
+				&& opens({ pngAsBak, png }) == QStringLiteral("image"),
+			"one image file opens the image comparison, on either side");
+		check(opens({ pngAsBin, png }) == QStringLiteral("binary")
+				&& opens({ png, pngAsBin }) == QStringLiteral("image"),
+			"the first file decides: a binary one before an image one opens the binary comparison");
+
+		// masks, not extensions only
+		QSettings().setValue(QStringLiteral("ImageCompare/FilePatterns"), QStringLiteral("b.*"));
+		QSettings().setValue(QStringLiteral("BinaryCompare/FilePatterns"), QStringLiteral("c.*"));
+		printf("  b.bak an image: %d, c.bin binary: %d\n", lm::isImageFile(pngAsBak),
+			lm::matchesBinaryFilePatterns(pngAsBin));
+		check(lm::isImageFile(pngAsBak) && !lm::isImageFile(png)
+				&& lm::matchesBinaryFilePatterns(pngAsBin)
+				&& !lm::matchesBinaryFilePatterns(pngAsBak),
+			"the patterns are masks, the binary ones as well");
+
+		// the page
+		{
+			OptionsDialog dialog;
+			QWidget *page = dialog.pageForTest(OptionsDialog::ImagePage);
+			const QList<QComboBox *> lists = page->findChildren<QComboBox *>();
+			const QList<QCheckBox *> boxes = page->findChildren<QCheckBox *>();
+			if (lists.size() != 1 || boxes.size() != 1)
+			{
+				printf("page: %d lists, %d check boxes\n", static_cast<int>(lists.size()),
+					static_cast<int>(boxes.size()));
+				return 2;
+			}
+			check(lists.at(0)->currentText() == QStringLiteral("b.*") && !boxes.at(0)->isChecked(),
+				"the page shows the options saved");
+			dialog.selectCategoryForTest(6); // Compare > Image
+			dialog.restoreDefaultsForTest();
+			check(lists.at(0)->currentText() == lm::defaultImageFilePatterns()
+					&& !boxes.at(0)->isChecked(),
+				"Defaults: WinMerge's");
+			boxes.at(0)->setChecked(true);
+			lists.at(0)->setEditText(QStringLiteral("*.png;*.PNG;*.gif"));
+			dialog.saveForTest();
+			check(lm::imageCompareInFolderCompare()
+					&& lm::imageFilePatterns() == QStringLiteral("*.PNG;*.gif"),
+				"OK saves the page, a pattern another one takes in left out");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestTableOptionsOpt))
+	{
+		// WinMerge's Options > Compare > Table (PropCompareTable) and what
+		// it drives (MakeTablePropertiesByFileName, SetTableProperties):
+		// the files that open as tables and the delimiter and quote they
+		// read by. MergeDesk opened only .csv and .tsv pairs, and guessed
+		// the delimiter from the content.
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+
+		// the fields (strutils::from_charstr) and the pattern lists as
+		// they are saved (WildcardRemoveDuplicatePatterns)
+		check(lm::characterOfField(QStringLiteral(",")) == QLatin1Char(',')
+				&& lm::characterOfField(QStringLiteral("\\t")) == QLatin1Char('\t')
+				&& lm::characterOfField(QStringLiteral("TAB")) == QLatin1Char('\t')
+				&& lm::characterOfField(QStringLiteral("0x3b")) == QLatin1Char(';')
+				&& lm::characterOfField(QString::fromUtf8("\xC2\xA7")) == QChar(0xA7)
+				&& lm::characterOfField(QString()).isNull(),
+			"a field names its character, as it is or by an escape");
+		check(lm::removeDuplicatePatterns(QStringLiteral("*.csv;*.CSV")) == QStringLiteral("*.CSV")
+				&& lm::removeDuplicatePatterns(QStringLiteral("*.csv;*.*")) == QStringLiteral("*.*")
+				&& lm::removeDuplicatePatterns(QStringLiteral("*.csv;*.txt"))
+					== QStringLiteral("*.csv;*.txt"),
+			"a pattern another one of the list takes in goes");
+
+		const QString csv = dir.filePath(QStringLiteral("a.csv"));
+		const QString tsv = dir.filePath(QStringLiteral("b.tsv"));
+		const QString txt = dir.filePath(QStringLiteral("c.txt"));
+		const QString otherTxt = dir.filePath(QStringLiteral("d.txt"));
+		const QString dat = dir.filePath(QStringLiteral("e.dat"));
+		lm::TableProps props = lm::tablePropertiesByFileName(csv);
+		check(props.isTable && props.delimiter == QLatin1Char(',')
+				&& props.quote == QLatin1Char('"') && props.allowNewlinesInQuotes,
+			"WinMerge's defaults: a .csv file is a table, by commas");
+		props = lm::tablePropertiesByFileName(tsv);
+		check(props.isTable && props.delimiter == QLatin1Char('\t'), "a .tsv file, by tabs");
+		check(!lm::tablePropertiesByFileName(txt).isTable
+				&& !lm::tablePropertiesByFileName(dat).isTable,
+			"other files are no tables, the custom group having no patterns");
+
+		lm::TableSettings settings;
+		settings.csvDelimiter = QStringLiteral(";");
+		settings.dsvFilePatterns = QStringLiteral("*.dat;*.psv");
+		settings.dsvDelimiter = QStringLiteral("|");
+		settings.quote = QStringLiteral("'");
+		settings.save();
+		props = lm::tablePropertiesByFileName(csv);
+		check(props.delimiter == QLatin1Char(';') && props.quote == QLatin1Char('\''),
+			"the CSV group's delimiter and the quote of the options");
+		props = lm::tablePropertiesByFileName(dat);
+		check(props.isTable && props.delimiter == QLatin1Char('|'),
+			"the custom group's patterns and delimiter");
+		QList<lm::TableProps> sides = lm::tablePropertiesOfSides({ csv, txt });
+		check(sides.at(1).isTable && sides.at(1).delimiter == QLatin1Char(';'),
+			"one table file is enough: the other side reads by its settings");
+		sides = lm::tablePropertiesOfSides({ csv, dat });
+		check(sides.at(0).delimiter == QLatin1Char(';') && sides.at(1).delimiter == QLatin1Char('|'),
+			"each table file reads by its own group");
+		sides = lm::tablePropertiesOfSides({ txt, otherTxt });
+		check(sides.at(0).isTable && sides.at(0).delimiter == QLatin1Char('|')
+				&& sides.at(1).delimiter == QLatin1Char('|'),
+			"a table asked for of files no pattern takes: the custom group's delimiter");
+
+		// what the comparisons open as
+		write(csv, "id;name\n1;'a;b'\n2;c\n");
+		write(txt, "id;name\n1;'a;b'\n2;d\n");
+		write(otherTxt, "id;name\n1;x\n");
+		{
+			MainWindow window;
+			window.openFileComparison({ csv, txt });
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			check(table != nullptr, "a .csv file against a .txt file opens as a table");
+			if (table != nullptr)
+			{
+				// the file's first line is the header, its second the
+				// first row
+				const QAbstractItemModel *model = table->tableForTest(1)->model();
+				printf("  %d columns, the second cell \"%s\"\n", model->columnCount(),
+					qPrintable(model->index(0, 1).data().toString()));
+				check(model->columnCount() == 2
+						&& model->index(0, 1).data().toString() == QStringLiteral("a;b"),
+					"the cells part by the options' delimiter and quote");
+			}
+		}
+		{
+			MainWindow window;
+			window.openFileComparison({ txt, otherTxt });
+			settle();
+			check(window.findChild<TableCompareView *>() == nullptr
+					&& window.findChild<FileCompareView *>() != nullptr,
+				"files no pattern takes compare as text");
+		}
+		{
+			const QString csv2 = dir.filePath(QStringLiteral("f.csv"));
+			const QString csv3 = dir.filePath(QStringLiteral("g.csv"));
+			write(csv2, "id;name\n");
+			write(csv3, "id;name\n");
+			MainWindow window;
+			window.openFileComparison({ csv, csv2, csv3 });
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			check(table != nullptr && table->paneCount() == 3,
+				"three table files open in three grids, as three texts do upstream");
+		}
+
+		// the page
+		{
+			OptionsDialog dialog;
+			QWidget *page = dialog.pageForTest(OptionsDialog::TablePage);
+			const QList<QComboBox *> lists = page->findChildren<QComboBox *>();
+			QList<QLineEdit *> fields;
+			for (QLineEdit *field : page->findChildren<QLineEdit *>())
+				if (qobject_cast<QComboBox *>(field->parentWidget()) == nullptr)
+					fields.append(field);
+			const QList<QCheckBox *> boxes = page->findChildren<QCheckBox *>();
+			if (lists.size() != 3 || fields.size() != 3 || boxes.size() != 1)
+			{
+				printf("page: %d lists, %d fields, %d check boxes\n",
+					static_cast<int>(lists.size()), static_cast<int>(fields.size()),
+					static_cast<int>(boxes.size()));
+				return 2;
+			}
+			check(lists.at(2)->currentText() == QStringLiteral("*.dat;*.psv")
+					&& fields.at(0)->text() == QStringLiteral(";")
+					&& fields.at(2)->text() == QStringLiteral("'"),
+				"the page shows the options saved");
+			dialog.selectCategoryForTest(4); // Compare > Table
+			dialog.restoreDefaultsForTest();
+			check(lists.at(0)->currentText() == QStringLiteral("*.csv")
+					&& lists.at(1)->currentText() == QStringLiteral("*.tsv")
+					&& lists.at(2)->currentText().isEmpty()
+					&& fields.at(0)->text() == QStringLiteral(",")
+					&& fields.at(1)->text() == QStringLiteral(";")
+					&& fields.at(2)->text() == QStringLiteral("\"")
+					&& boxes.at(0)->isChecked(),
+				"Defaults: WinMerge's");
+			emit lists.at(0)->activated(0);
+			const bool ticksOff = lists.at(0)->currentText().isEmpty();
+			emit lists.at(0)->activated(0);
+			check(ticksOff && lists.at(0)->currentText() == QStringLiteral("*.csv"),
+				"a default pattern of the drop-down ticks off and on");
+			lists.at(1)->setEditText(QStringLiteral("*.tsv;*.TSV"));
+			boxes.at(0)->setChecked(false);
+			dialog.saveForTest();
+			const lm::TableSettings saved = lm::TableSettings::load();
+			check(saved.tsvFilePatterns == QStringLiteral("*.TSV")
+					&& saved.csvDelimiter == QStringLiteral(",")
+					&& !saved.allowNewlinesInQuotes,
+				"OK saves the page, a pattern another one takes in left out");
+		}
+
+		// "Allow newlines in quotes" (JoinLinesForTableEditingMode): a
+		// quoted cell's line breaks stay in its row, which compares,
+		// copies and saves as one
+		lm::TableSettings().save();
+		const QString multiLeft = dir.filePath(QStringLiteral("multi-left.csv"));
+		const QString multiRight = dir.filePath(QStringLiteral("multi-right.csv"));
+		const QByteArray leftBytes = "id,text\n1,\"first\nsecond\"\n2,same\n";
+		write(multiLeft, leftBytes);
+		write(multiRight, "id,text\n1,\"first\nSECOND\"\n2,same\n");
+		{
+			MainWindow window;
+			window.openFileComparison({ multiLeft, multiRight });
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			if (table == nullptr)
+				return 2;
+			QTableView *grid = table->tableForTest(0);
+			const QAbstractItemModel *model = grid->model();
+			printf("  %d rows, %d difference(s), heights %d and %d\n", model->rowCount(),
+				table->diffCount(), grid->rowHeight(0), grid->rowHeight(1));
+			check(model->rowCount() == 2 && table->diffCount() == 1
+					&& model->index(0, 1).data().toString() == QStringLiteral("first\nsecond"),
+				"a quoted cell over two lines is one cell of one row");
+			check(grid->rowHeight(0) > grid->rowHeight(1)
+					&& table->tableForTest(1)->rowHeight(0) == grid->rowHeight(0),
+				"its row is as tall as its lines, on both sides");
+			table->gotoFirstDiff();
+			table->copyCurrentDiff(0);
+			QString error;
+			check(table->saveModified(&error), "the copy saves");
+			QFile saved(multiRight);
+			check(saved.open(QIODevice::ReadOnly) && saved.readAll() == leftBytes,
+				"Copy to Right takes the whole row, its line break kept");
+		}
+		const QByteArray crlfLeft = "id,text\r\n1,\"first\r\nsecond\"\r\n2,same\r\n";
+		write(multiLeft, crlfLeft);
+		write(multiRight, "id,text\r\n1,\"other\"\r\n2,same\r\n");
+		{
+			MainWindow window;
+			window.openFileComparison({ multiLeft, multiRight });
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			if (table == nullptr)
+				return 2;
+			check(table->tableForTest(0)->model()->index(0, 1).data().toString()
+					== QStringLiteral("first\nsecond"),
+				"a CRLF line break in a cell shows as a line");
+			table->gotoFirstDiff();
+			table->copyCurrentDiff(0);
+			QString error;
+			table->saveModified(&error);
+			QFile saved(multiRight);
+			check(saved.open(QIODevice::ReadOnly) && saved.readAll() == crlfLeft,
+				"and saves as it was read");
+		}
+		lm::TableSettings noNewlines;
+		noNewlines.allowNewlinesInQuotes = false;
+		noNewlines.save();
+		{
+			MainWindow window;
+			window.openFileComparison({ multiLeft, multiRight });
+			settle();
+			auto *table = window.findChild<TableCompareView *>();
+			check(table != nullptr && table->tableForTest(0)->model()->rowCount() == 3,
+				"with the option off, every line of the file is a row");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestDiffScrollOpt))
+	{
+		// WinMerge's ShowDiff scrolls to a difference only when it does
+		// not show whole with 3 lines to spare under it, and then puts its
+		// first line 5 lines below the top: stepping down, the next
+		// differences tend to be on screen already. MergeDesk centered
+		// every difference it went to (issue #10). The text and the table
+		// views alike.
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		// 400 lines, lines 100, 104, 108 and 200 different on the right:
+		// differences 0 to 3, the first three close together; the tables
+		// have the same data rows under a header row
+		const QList<int> changed = { 100, 104, 108, 200 };
+		QByteArray leftText, rightText;
+		QByteArray leftCsv = "id,value\n", rightCsv = "id,value\n";
+		for (int i = 1; i <= 400; ++i)
+		{
+			const QByteArray number = QByteArray::number(i);
+			leftText += "line " + number + " of the text\n";
+			rightText += changed.contains(i) ? "line " + number + " CHANGED\n"
+				: "line " + number + " of the text\n";
+			leftCsv += number + ",same\n";
+			rightCsv += number + (changed.contains(i) ? ",changed\n" : ",same\n");
+		}
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		const QString leftTable = dir.filePath(QStringLiteral("left.csv"));
+		const QString rightTable = dir.filePath(QStringLiteral("right.csv"));
+		write(left, leftText);
+		write(right, rightText);
+		write(leftTable, leftCsv);
+		write(rightTable, rightCsv);
+
+		// --- the text view: the scroll bar counts lines from 0 ---
+		{
+			FileCompareView view;
+			QString error;
+			if (!view.compare(QStringList{ left, right }, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			view.resize(1000, 640);
+			view.show();
+			settle();
+			DiffTextEdit *const pane = view.paneForTest(0);
+			DiffTextEdit *const other = view.paneForTest(1);
+			const auto top = [&]() { return pane->verticalScrollBar()->value(); };
+			printf("  %d lines on screen\n", pane->visibleLineCount());
+			check(pane->visibleLineCount() >= 20, "room for the close differences together");
+
+			view.gotoFirstDiff();
+			printf("  the first difference (line 100): top %d\n", top());
+			check(view.currentDiffForTest() == 0 && top() == 99 - 5
+					&& other->verticalScrollBar()->value() == top(),
+				"a difference out of sight goes 5 lines below the top, in every pane");
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 1 && top() == 94,
+				"Next to a difference on screen does not scroll");
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 2 && top() == 94, "nor does the next one on screen");
+			view.gotoNextDiff();
+			printf("  the fourth difference (line 200): top %d\n", top());
+			check(view.currentDiffForTest() == 3 && top() == 199 - 5,
+				"Next to a difference out of sight scrolls it 5 lines below the top");
+			view.gotoPrevDiff();
+			check(view.currentDiffForTest() == 2 && top() == 107 - 5,
+				"so does Previous to one above the screen");
+			view.gotoPrevDiff();
+			check(view.currentDiffForTest() == 1 && top() == 102,
+				"and Previous to one on screen does not scroll");
+			// near the bottom edge: the third difference (view line 107)
+			// with 3 lines on screen under it, then with 2
+			const int spareThree = 107 + 3 - pane->visibleLineCount() + 1;
+			pane->verticalScrollBar()->setValue(spareThree);
+			settle();
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 2 && top() == spareThree,
+				"a difference with 3 lines under it on screen does not scroll");
+			view.gotoPrevDiff();
+			pane->verticalScrollBar()->setValue(spareThree - 1);
+			settle();
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 2 && top() == 102,
+				"with 2 lines under it, it counts as out of sight");
+		}
+
+		// --- the table view: data row n is model row n - 1 ---
+		{
+			TableCompareView view;
+			QString error;
+			if (!view.compare(leftTable, rightTable, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			view.resize(1000, 640);
+			view.show();
+			settle();
+			QList<QTableView *> grids = view.findChildren<QTableView *>();
+			std::sort(grids.begin(), grids.end(), [&view](QTableView *a, QTableView *b) {
+				return a->mapTo(&view, QPoint()).x() < b->mapTo(&view, QPoint()).x();
+			});
+			if (grids.size() < 2)
+				return 2;
+			QTableView *const grid = grids.first();
+			const auto top = [&]() { return grid->rowAt(0); };
+			printf("  %d rows on screen\n",
+				grid->viewport()->height() / grid->verticalHeader()->defaultSectionSize());
+
+			view.gotoFirstDiff();
+			printf("  table: the first difference (row 100): top %d\n", top());
+			check(view.currentDiffForTest() == 0 && top() == 99 - 5
+					&& grids.last()->rowAt(0) == top(),
+				"table: a difference out of sight goes 5 rows below the top, in both grids");
+			view.gotoNextDiff();
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 2 && top() == 94,
+				"table: Next to differences on screen does not scroll");
+			view.gotoNextDiff();
+			check(view.currentDiffForTest() == 3 && top() == 199 - 5,
+				"table: Next to a difference out of sight scrolls it 5 rows below the top");
+			view.gotoPrevDiff();
+			check(view.currentDiffForTest() == 2 && top() == 107 - 5,
+				"table: so does Previous to one above the screen");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestScrollSyncOpt))
+	{
+		// however a pane scrolls, the other panes follow it and the
+		// location pane's marker stands for the lines the first one shows
+		// (issue #9). Up to Qt 6.5.0, the AppImage's 6.4 among them, a
+		// QPlainTextEdit scrolls by itself with its scroll bar's signals
+		// blocked: a click on the location pane left the marker behind,
+		// and Find, Page Down, the cursor keys and a click on the bar's
+		// track moved one pane alone. The marker also kept its height
+		// when the view changed size or the text size changed.
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		// 400 lines, every 60th different on the right
+		QByteArray leftText, rightText;
+		for (int i = 1; i <= 400; ++i)
+		{
+			const QByteArray line = "line " + QByteArray::number(i) + " of the text\n";
+			leftText += line;
+			rightText += i % 60 == 0 ? "line " + QByteArray::number(i) + " CHANGED\n" : line;
+		}
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString middle = dir.filePath(QStringLiteral("middle.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		write(left, leftText);
+		write(middle, leftText);
+		write(right, rightText);
+		const auto settle = []()
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				QThread::msleep(10);
+				QCoreApplication::processEvents();
+			}
+		};
+		// a key as the pane gets it
+		const auto press = [](QWidget *pane, const QKeyCombination &key)
+		{
+			QKeyEvent event(QEvent::KeyPress, key.key(), key.keyboardModifiers());
+			QApplication::sendEvent(pane, &event);
+		};
+
+		FileCompareView view;
+		QString error;
+		if (!view.compare(QStringList{ left, right }, &error))
+		{
+			printf("compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		view.resize(1000, 640);
+		view.show();
+		settle();
+		DiffTextEdit *const panes[2] = { view.paneForTest(0), view.paneForTest(1) };
+		LocationPane *const map = view.locationPaneForTest();
+		// the panes on one line, at least the given one, and the marker
+		// on the lines the first pane shows
+		const auto followed = [&](const char *what, int atLeast)
+		{
+			settle();
+			const int first = panes[0]->firstVisibleLine();
+			printf("  panes at lines %d and %d, marker at %d for %d lines, the pane shows %d\n",
+				first + 1, panes[1]->firstVisibleLine() + 1, map->viewFirstForTest() + 1,
+				map->viewCountForTest(), panes[0]->visibleLineCount());
+			check(first >= atLeast && panes[1]->firstVisibleLine() == first
+				&& panes[1]->verticalScrollBar()->value() == panes[0]->verticalScrollBar()->value()
+				&& map->viewFirstForTest() == first
+				&& map->viewCountForTest() == panes[0]->visibleLineCount(), what);
+		};
+		const auto toTop = [&]()
+		{
+			for (DiffTextEdit *pane : panes)
+			{
+				pane->setTextCursor(QTextCursor(pane->document()->firstBlock()));
+				pane->verticalScrollBar()->setValue(0);
+			}
+			settle();
+		};
+
+		toTop();
+		{
+			const QPointF at(map->width() / 2.0, map->height() * 0.75);
+			QMouseEvent click(QEvent::MouseButtonPress, at, map->mapToGlobal(at),
+				Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+			QApplication::sendEvent(map, &click);
+		}
+		followed("a click on the location pane: the panes and the marker go there", 200);
+
+		toTop();
+		view.gotoFirstDiff();
+		view.gotoNextDiff();
+		view.gotoNextDiff();
+		followed("the next difference: the panes and the marker go there", 120);
+
+		toTop();
+		press(panes[0], QKeySequence(QKeySequence::MoveToNextPage)[0]);
+		followed("Page Down in the left pane: the right pane and the marker follow", 1);
+
+		toTop();
+		for (int i = panes[0]->visibleLineCount() + 5; i > 0; --i)
+			press(panes[0], QKeyCombination(Qt::Key_Down));
+		followed("the Down key past the bottom of the view: the right pane and the marker follow", 1);
+
+		toTop();
+		press(panes[1], QKeySequence(QKeySequence::MoveToEndOfDocument)[0]);
+		followed("the end of the text by keyboard in the right pane: the left pane and the marker follow",
+			300);
+
+		toTop();
+		panes[0]->verticalScrollBar()->triggerAction(QAbstractSlider::SliderPageStepAdd);
+		followed("a click on the scroll bar's track: the right pane and the marker follow", 1);
+
+		toTop();
+		{
+			const QPointF at(50, 50);
+			QWheelEvent wheel(at, panes[0]->viewport()->mapToGlobal(at), QPoint(), QPoint(0, -360),
+				Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+			QApplication::sendEvent(panes[0]->viewport(), &wheel);
+		}
+		followed("the mouse wheel: the right pane and the marker follow", 1);
+
+		toTop();
+		panes[0]->verticalScrollBar()->setValue(150);
+		followed("the scroll bar's handle: the right pane and the marker follow", 150);
+
+		// Find, from the left pane, a line out of view: it comes to the
+		// middle of the panes
+		toTop();
+		view.setCursorViewLineForTest(0, 0);
+		{
+			PaneSearch *search = view.paneSearchForTest(0);
+			search->editFind();
+			FindTextDialog *find = search->findDialog();
+			if (find == nullptr)
+				return 1;
+			find->findTextForTest()->lineEdit()->setText(QStringLiteral("line 377 of"));
+			emit find->findTextForTest()->lineEdit()->textEdited(QStringLiteral("line 377 of"));
+			find->findNextForTest()->click();
+			find->reject();
+		}
+		followed("Find, the match out of view: both panes and the marker go to it", 300);
+
+		view.resize(1000, 900);
+		followed("a taller window: the marker fits the lines the pane now shows", 300);
+
+		view.zoomIn();
+		view.zoomIn();
+		followed("a larger text: the marker fits the lines the pane now shows", 300);
+		view.zoomReset();
+
+		// three panes, Page Down in the middle one
+		{
+			FileCompareView three;
+			if (!three.compare(QStringList{ left, middle, right }, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			three.resize(1200, 640);
+			three.show();
+			settle();
+			DiffTextEdit *const p[3] = { three.paneForTest(0), three.paneForTest(1),
+				three.paneForTest(2) };
+			press(p[1], QKeySequence(QKeySequence::MoveToNextPage)[0]);
+			settle();
+			const int first = p[0]->firstVisibleLine();
+			printf("  panes at lines %d, %d and %d, marker at %d\n", first + 1,
+				p[1]->firstVisibleLine() + 1, p[2]->firstVisibleLine() + 1,
+				three.locationPaneForTest()->viewFirstForTest() + 1);
+			check(first > 0 && p[1]->firstVisibleLine() == first && p[2]->firstVisibleLine() == first
+				&& three.locationPaneForTest()->viewFirstForTest() == first,
+				"3-way, Page Down in the middle pane: the outer panes and the marker follow");
+		}
+
+		printf("ok: %d\n", ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestLastLineOpt))
+	{
+		// the diff engine is handed every line with its line ending, the
+		// last one too: the lines only one file has at its end are the
+		// whole difference, the line before them is none of it, and an
+		// empty last line is a line like any other
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		bool ok = true;
+		const auto check = [&ok](bool condition, const char *what)
+		{
+			printf("%s: %s\n", what, condition ? "ok" : "FAILED");
+			ok = ok && condition;
+		};
+		const auto write = [](const QString &path, const QByteArray &bytes)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+				std::exit(2);
+			f.write(bytes);
+		};
+		const auto read = [](const QString &path)
+		{
+			QFile f(path);
+			return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+		};
+		const QString left = dir.filePath(QStringLiteral("left.txt"));
+		const QString right = dir.filePath(QStringLiteral("right.txt"));
+		// the view lines of the differences between two texts
+		const auto differing = [&](const QByteArray &leftText, const QByteArray &rightText)
+		{
+			write(left, leftText);
+			write(right, rightText);
+			FileCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+			{
+				printf("compare failed: %s\n", qPrintable(error));
+				std::exit(2);
+			}
+			QList<int> lines = view.diffLinesForTest();
+			lines.prepend(view.diffCount()); // how many differences, then their lines
+			return lines;
+		};
+		check(differing("a\nb\n", "a\nb\nc\nd\n") == QList<int>{ 1, 2, 3 },
+			"text: lines added at the end are the whole difference");
+		check(differing("a\nb\nc\n", "a\n") == QList<int>{ 1, 1, 2 },
+			"text: lines removed at the end are the whole difference");
+		check(differing("a\n\n", "a\n") == QList<int>{ 1, 1 },
+			"text: an empty last line is a line of its own");
+		check(differing("a\nb\nc\n", "a\nx\nc\n") == QList<int>{ 1, 1 }
+			&& differing("a\nb\n", "a\nx\n") == QList<int>{ 1, 1 }
+			&& differing("a\nb\n", "a\nb\n") == QList<int>{ 0 },
+			"text: a changed line and identical files are as they were");
+		{
+			// merging the lines at the end makes the files the same
+			write(left, "a\nb\n");
+			write(right, "a\nb\nc\nd\n");
+			FileCompareView view;
+			QString error;
+			if (!view.compare(left, right, &error))
+				return 2;
+			view.copyAllFrom(1, 0);
+			view.recompare();
+			const bool saved = view.saveSideAt(0, &error);
+			check(saved && view.diffCount() == 0 && read(left) == read(right)
+				&& read(left) == "a\nb\nc\nd\n",
+				"text: the lines at the end merge and save as they are");
+		}
+		{
+			const QString leftTable = dir.filePath(QStringLiteral("left.csv"));
+			const QString rightTable = dir.filePath(QStringLiteral("right.csv"));
+			write(leftTable, "id,name\n1,apple\n");
+			write(rightTable, "id,name\n1,apple\n2,banana\n");
+			TableCompareView view;
+			QString error;
+			if (!view.compare(leftTable, rightTable, &error))
+			{
+				printf("table compare failed: %s\n", qPrintable(error));
+				return 2;
+			}
+			check(view.diffCount() == 1 && view.diffRowsForTest() == QList<int>{ 2 },
+				"table: a row added at the end is the whole difference");
+		}
+		printf("last line: %s\n", ok ? "ok" : "FAILED");
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestUndoRescanOpt))
+	{
+		// the README's old limitation: a recompare that rebuilds the
+		// alignment of the edited pane must not clear its undo history
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString leftPath = dir.filePath(QStringLiteral("left.txt"));
+		const QString rightPath = dir.filePath(QStringLiteral("right.txt"));
+		{
+			QFile f(leftPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("a\np\nq\nb\n");
+		}
+		{
+			QFile f(rightPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("a\nb\n");
+		}
+		FileCompareView view;
+		QString error;
+		if (!view.compare({ leftPath, rightPath }, &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		const QStringList original{ QStringLiteral("a"), QStringLiteral("b") };
+		const QStringList edited{ QStringLiteral("a"), QStringLiteral("p"),
+			QString(), QStringLiteral("b") };
+		bool ok = view.diffCount() == 1
+			&& view.realLinesForTest(1) == original;
+		// type over the first ghost: the pane gains a real line, so the
+		// recompare must delete the leftover ghost from this very pane
+		view.typeAtForTest(1, 1, QStringLiteral("p\n"));
+		view.recompare();
+		ok = ok && view.realLinesForTest(1) == edited;
+		view.undoActive();
+		const bool undone = view.realLinesForTest(1) == original;
+		view.recompare();
+		ok = ok && undone && view.diffCount() == 1;
+		view.redoActive();
+		const bool redone = view.realLinesForTest(1) == edited;
+		view.undoActive();
+		const bool undoneAgain = view.realLinesForTest(1) == original;
+		printf("undone: %d, redone: %d, again: %d, ok: %d\n",
+			undone, redone, undoneAgain, ok);
+		return (ok && redone && undoneAgain) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestUndoGhostsOpt))
+	{
+		// undoing a merge restores the target's ghost filler as ghosts,
+		// not as phantom real empty lines that would reach the file
+		QTemporaryDir dir;
+		if (!dir.isValid())
+			return 2;
+		const QString leftPath = dir.filePath(QStringLiteral("left.txt"));
+		const QString rightPath = dir.filePath(QStringLiteral("right.txt"));
+		{
+			QFile f(leftPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("a\nx\ny\nb\n");
+		}
+		{
+			QFile f(rightPath);
+			if (!f.open(QIODevice::WriteOnly))
+				std::exit(2);
+			f.write("a\nb\n");
+		}
+		FileCompareView view;
+		QString error;
+		if (!view.compare({ leftPath, rightPath }, &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		const QStringList original{ QStringLiteral("a"), QStringLiteral("b") };
+		const QStringList merged{ QStringLiteral("a"), QStringLiteral("x"),
+			QStringLiteral("y"), QStringLiteral("b") };
+		view.gotoFirstDiff();
+		view.copyCurrentDiff(0);
+		bool ok = view.diffCount() == 0
+			&& view.realLinesForTest(1) == merged;
+		view.undoActive();
+		const bool undone = view.realLinesForTest(1) == original
+			&& view.diffCount() == 1;
+		view.redoActive();
+		const bool redone = view.realLinesForTest(1) == merged
+			&& view.diffCount() == 0;
+		printf("merged ok: %d, undone: %d, redone: %d\n", ok, undone, redone);
+		return (ok && undone && redone) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestMerge3Opt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 3)
+			return 2;
+		FileCompareView view;
+		QString error;
+		if (!view.compare(files, &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		const int initial = view.diffCount();
+		// "Copy all differences to other file?": Yes
+		lm::setQuestionSinkForTest([](const QString &, bool *) { return true; });
+		// the user's workflow: with the left pane active, Alt+Right pushes
+		// left->middle; recompare, focus the middle pane, Alt+Right again
+		// pushes middle->right (WinMerge's pane-relative MenuIDtoXY)
+		view.copyAllToRight();          // active pane 0: left -> middle
+		view.recompare();
+		const int afterFirst = view.diffCount();
+		view.focusNextPane();           // active pane 1 (middle)
+		view.copyAllToRight();          // middle -> right
+		view.recompare();
+		const int afterSecond = view.diffCount();
+		printf("initial: %d, after left->middle: %d, after middle->right: %d\n",
+			initial, afterFirst, afterSecond);
+		// after the first merge the block still differs against the right
+		// pane; only the second merge zeroes the comparison
+		return (initial > 0 && afterFirst > 0 && afterSecond == 0) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestImageOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		ImageCompareView view;
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		const int initial = view.diffCount();
+		view.copyAllFrom(0);
+		const int merged = view.diffCount();
+		view.undo();
+		const int undone = view.diffCount();
+		view.redo();
+		const int redone = view.diffCount();
+		printf("initial: %d, merged: %d, undone: %d, redone: %d\n",
+			initial, merged, undone, redone);
+		return (initial > 0 && merged == 0 && undone == initial
+			&& redone == 0) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestTableOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		TableCompareView view;
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		const int initial = view.diffCount();
+		view.copyAllFrom(0);
+		const int merged = view.diffCount();
+		view.undo();
+		const int undone = view.diffCount();
+		view.redo();
+		const int redone = view.diffCount();
+		if (!view.saveModified(&error))
+		{
+			fprintf(stderr, "save failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		QFile leftFile(files.at(0)), rightFile(files.at(1));
+		if (!leftFile.open(QIODevice::ReadOnly))
+			std::exit(2);
+		if (!rightFile.open(QIODevice::ReadOnly))
+			std::exit(2);
+		const bool equal = leftFile.readAll() == rightFile.readAll();
+		printf("initial: %d, merged: %d, undone: %d, redone: %d, "
+			"files equal: %d\n", initial, merged, undone, redone, equal);
+		return (initial > 0 && merged == 0 && undone == initial
+			&& redone == 0 && equal) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestCopyOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		FileCompareView view;
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		view.selectAllAndCopyForTest(0);
+		const QString copied = QGuiApplication::clipboard()->text();
+
+		QFile leftFile(files.at(0));
+		if (!leftFile.open(QIODevice::ReadOnly))
+			std::exit(2);
+		QString expected = QString::fromUtf8(leftFile.readAll());
+		expected.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+		while (expected.endsWith(QChar('\n')))
+			expected.chop(1);
+
+		const bool ok = copied == expected;
+		printf("copied %lld chars, expected %lld, match: %d\n",
+			static_cast<long long>(copied.size()),
+			static_cast<long long>(expected.size()), ok);
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestNavOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		FileCompareView view;
+		view.resize(900, 400);
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		// stand on the middle difference, merge it (which deselects),
+		// then Next must continue downward from the cursor
+		view.gotoFirstDiff();
+		view.gotoNextDiff();
+		QCoreApplication::processEvents();
+		const int middle = view.firstVisibleViewLine();
+		view.copyCurrentDiff(0);
+		view.gotoNextDiff();
+		QCoreApplication::processEvents();
+		const int landed = view.firstVisibleViewLine();
+		printf("middle: %d, landed: %d\n", middle, landed);
+		return landed > middle ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestUndoScrollOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		FileCompareView view;
+		view.resize(900, 400);
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		// panes of their real size: hidden, a pane is a line or two tall
+		// and the difference gone to sits under its bottom edge
+		view.show();
+		QCoreApplication::processEvents();
+		view.gotoLastDiff();
+		QCoreApplication::processEvents();
+		const int scrollBefore = view.firstVisibleViewLine();
+		view.copyCurrentDiff(0);
+		QCoreApplication::processEvents();
+		view.undoActive();
+		QCoreApplication::processEvents();
+		const int scrollAfter = view.firstVisibleViewLine();
+		printf("before: %d, after: %d\n", scrollBefore, scrollAfter);
+		return qAbs(scrollAfter - scrollBefore) <= 2 ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestUndoOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		FileCompareView view;
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		const int initial = view.diffCount();
+		// the first difference current, as the app has it on opening
+		// (a copy with none current takes the one the cursor is in)
+		view.gotoFirstDiff();
+		view.copyCurrentDiff(0);
+		const int afterCopy = view.diffCount();
+		view.undoActive();
+		const int afterUndo = view.diffCount();
+		view.redoActive();
+		const int afterRedo = view.diffCount();
+		printf("initial: %d, copy: %d, undo: %d, redo: %d\n",
+			initial, afterCopy, afterUndo, afterRedo);
+		const bool ok = initial > 0 && afterCopy == initial - 1
+			&& afterUndo == initial && afterRedo == initial - 1;
+		return ok ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestSaveOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		QFile rightBefore(files.at(1));
+		if (!rightBefore.open(QIODevice::ReadOnly))
+			std::exit(2);
+		const QByteArray originalRight = rightBefore.readAll();
+		rightBefore.close();
+
+		FileCompareView view;
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		view.copyAllFrom(0);
+		if (!view.saveModified(&error))
+		{
+			fprintf(stderr, "save failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		QFile leftFile(files.at(0)), rightFile(files.at(1));
+		QFile backupFile(files.at(1) + QStringLiteral(".bak"));
+		if (!leftFile.open(QIODevice::ReadOnly))
+			std::exit(2);
+		if (!rightFile.open(QIODevice::ReadOnly))
+			std::exit(2);
+		const bool merged = leftFile.readAll() == rightFile.readAll();
+		bool backupOk = backupFile.open(QIODevice::ReadOnly)
+			&& backupFile.readAll() == originalRight;
+		printf("merged: %d, backup: %d\n", merged, backupOk);
+		return (merged && backupOk) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestMergeAllOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		FileCompareView view;
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		view.copyAllFrom(0);
+		view.recompare();
+		printf("remaining diffs: %d\n", view.diffCount());
+		return view.diffCount() == 0 ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestFileOpsOpt))
+	{
+		const QStringList dirs = parser.positionalArguments();
+		if (dirs.size() != 2)
+			return 2;
+		if (!lm::copyRecursively(dirs.at(0), dirs.at(1)))
+		{
+			fprintf(stderr, "copy failed\n");
+			return 1;
+		}
+		const lm::FolderCompareResult result =
+			lm::compareFolders(dirs.at(0), dirs.at(1), true);
+		printf("after copy: %d different, %d unique, %d identical\n",
+			result.different, result.unique, result.identical);
+		return (result.different == 0 && result.unique == 0) ? 0 : 1;
+	}
+
+	if (parser.isSet(selftestCountOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		FileCompareView view;
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		printf("diffs: %d\n", view.diffCount());
+		return 0;
+	}
+
+	if (parser.isSet(selftestMergeOpt))
+	{
+		const QStringList files = parser.positionalArguments();
+		if (files.size() != 2)
+			return 2;
+		FileCompareView view;
+		QString error;
+		if (!view.compare(files.at(0), files.at(1), &error))
+		{
+			fprintf(stderr, "compare failed: %s\n", qPrintable(error));
+			return 2;
+		}
+		int guard = 0;
+		while (view.diffCount() > 0 && guard++ < 1000)
+		{
+			// a plain copy leaves none current: the first one again
+			view.gotoFirstDiff();
+			view.copyCurrentDiff(0);
+		}
+		view.recompare();
+		printf("remaining diffs: %d\n", view.diffCount());
+		return view.diffCount() == 0 ? 0 : 1;
+	}
+
+	// a day of use, for the request that waits for a few of them (see
+	// StarPrompt), counted before the first screen asks whether it is
+	// due; a screenshot for testing is none
+	if (!parser.isSet(screenshotOpt))
+		lm::StarPrompt::instance()->noteAppStarted();
+
+	MainWindow window;
+#ifdef Q_OS_MACOS
+	lm::installMacServices(&window);
+#endif
+	const QStringList args = parser.positionalArguments();
+	if (parser.isSet(newOpt))
+	{
+		window.openBlankComparison();
+	}
+	else if (args.size() == 2 || args.size() == 3)
+	{
+		// folders and archives, in any mix, compare as folders
+		if (MainWindow::allFolderLike(args))
+			window.openFolderComparison(args);
+		else
+			window.openFileComparison(args);
+	}
+	else if (!args.isEmpty())
+	{
+		window.openSelector(args);
+	}
+	else if (OptionsDialog::showSelectorAtStartup())
+	{
+		// WinMerge's "show Select Files or Folders at startup" option
+		window.openSelector();
+	}
+	else
+	{
+		// like WinMerge, start on a fresh (blank) comparison; the
+		// selector stays one Cmd+O away
+		window.openBlankComparison();
+	}
+
+	if (parser.isSet(gotoFirstOpt))
+		window.gotoFirstDifference();
+
+	if (parser.isSet(screenshotOpt))
+	{
+		const QString target = parser.value(screenshotOpt);
+		// give async comparisons a moment to finish before capturing
+		QTimer::singleShot(1500, &window, [&window, target]() {
+			window.resize(1100, 700);
+			const bool saved = window.grab().save(target);
+			if (!saved)
+				qWarning("Could not save the application screenshot.");
+			QApplication::exit(saved ? 0 : 2);
+		});
+		window.show();
+		return app.exec();
+	}
+
+	window.show();
+	return app.exec();
+}

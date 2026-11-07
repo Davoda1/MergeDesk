@@ -1,0 +1,243 @@
+// MergeDesk modifications: Copyright (C) 2026 davoda1. Modified 2026-11-06.
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include <functional>
+#include <memory>
+#include <QStringList>
+#include <QWidget>
+
+#include "FileOps.h"
+
+class QAction;
+class QCheckBox;
+class QComboBox;
+class QLabel;
+class QMouseEvent;
+class QSlider;
+class QSpinBox;
+class QSplitter;
+class QTimer;
+class CImgMergeBuffer;
+class FilepathEdit;
+class ImagePane;
+class DiffMapWidget;
+
+/**
+ * Two-way image comparison, porting WinMerge's image compare (WinIMerge):
+ * side-by-side panes over the block-based pixel diff engine, with the
+ * original's settings panel (highlight/blink, block size and alpha, color
+ * distance threshold, insertion/deletion detection, overlay modes, zoom,
+ * multi-page), diff navigation, copy between sides with undo/redo, wipe
+ * and rectangle-select dragging modes, rotation/flips and saving.
+ */
+class ImageCompareView : public QWidget
+{
+	Q_OBJECT
+public:
+	explicit ImageCompareView(QWidget *parent = nullptr);
+	~ImageCompareView() override;
+
+	/** Load 2 or 3 images and run the initial comparison. */
+	bool compare(const QStringList &paths, QString *error);
+	bool compare(const QString &leftPath, const QString &rightPath,
+		QString *error)
+	{
+		return compare(QStringList{ leftPath, rightPath }, error);
+	}
+
+	bool isModified() const;
+	int diffCount() const;
+	int paneCount() const { return m_paneCount; }
+	QStringList paths() const;
+	QString tabTitle() const;
+	/** WinMerge's file description (strDesc): the header and the tab
+	    title show it instead of the file name, as "Original File" in a
+	    self-compare. */
+	void setSideDescription(int side, const QString &description);
+	/** Where a pane is saved in place of its file (the command line's
+	    -o); the pane goes on with that file once saved. */
+	void setSaveAsPath(const QString &path) { m_saveAsPath = path; }
+	/** WinMerge's ChangeFile, which the path bar calls: save what was
+	    changed (after asking), then open the images again with another
+	    one in one pane. */
+	bool changeFile(int pane, const QString &path, const QString &description);
+	/** How the changes are saved before (PromptAndSaveIfNeeded); false
+	    cancels. */
+	void setSavePrompt(std::function<bool()> prompt) { m_savePrompt = std::move(prompt); }
+	/** Ctrl+L: edit the active pane's path in its bar. */
+	void editActivePanePath();
+	FilepathEdit *headerForTest(int pane) const { return m_headers[pane]; }
+	int activePaneForTest() const { return m_activePane; }
+	bool saveModified(QString *error);
+	void setReadOnlySides(const QList<bool> &readOnly);
+    bool isSideReadOnly(int side) const;
+
+	void gotoFirstDiff();
+	void gotoNextDiff();
+	void gotoPrevDiff();
+	void gotoLastDiff();
+	void selectDiffAtCursor();
+	/** Copy the current difference between explicit panes. */
+	void copyCurrentDiff(int sourceSide, int targetSide);
+	void copyAllFrom(int sourceSide, int targetSide);
+	/** Compatibility shim: target is the other side (2-way) or the
+	    middle pane (3-way). */
+	void copyAllFrom(int sourceSide)
+	{
+		copyAllFrom(sourceSide, mergeTarget(sourceSide));
+	}
+	/** WinMerge's pane-relative merge commands (MenuIDtoXY). */
+	void copyToRight();
+	void copyToLeft();
+	void copyAllToRight();
+	void copyAllToLeft();
+	void undo();
+	void redo();
+	void focusNextPane();
+	void recompare();
+	/** Recompare asked for by the user (F5, the Recompare button),
+	    followed by rescanned(): WinMerge's OnRefresh, which reports
+	    identical files. */
+	void refreshByUser();
+	/** WinMerge's OnFileReload, past its save prompt: the images are
+	    read from disk again and the undo history goes. Nothing is
+	    touched when a file cannot be read. */
+	bool reload(QString *error);
+	/** The first pane's file that another application changed since it
+	    was loaded or saved here (CheckFileChanged); empty when none. */
+	QString changedPathOnDisk() const;
+	void zoomIn();
+	void zoomOut();
+	void zoomReset();
+
+	// Image-menu surface (also driven by the settings panel)
+	bool showDifferences() const;
+	int blockSize() const;
+	double colorDistanceThreshold() const;
+	int insertionDeletionMode() const;
+	int overlayMode() const;
+	int draggingMode() const { return m_draggingMode; }
+	int maxPageCount() const;
+	void setShowDifferences(bool show);
+	void setBlockSize(int size);
+	void setColorDistanceThreshold(double threshold);
+	void setInsertionDeletionMode(int mode);
+	void setOverlayMode(int mode);
+	void setDraggingMode(int mode);
+	void setZoom(double zoom);
+	void rotateActivePane(int direction); // +1 = right (angle - 90)
+	void flipActivePaneHorizontal();
+	void flipActivePaneVertical();
+	void nextPage();
+	void prevPage();
+	void nextPageActivePane();
+	void prevPageActivePane();
+
+	// clipboard / selection (Edit menu)
+	void editCopy();
+	void editCut();
+	void editPaste();
+	void editDelete();
+	void selectAll();
+	void cancelSelection();
+
+signals:
+	void rescanned();
+	/** A successful save, with the compared paths and the current
+	    difference count (for folder-comparison row updates). */
+	void fileSaved(const QStringList &paths, int significantDiffs);
+	void modifiedChanged(bool modified);
+	void pathsChanged();
+
+private:
+	void buildToolbar(class QVBoxLayout *layout);
+	QWidget *buildToolPanel();
+	void loadSettings();
+	void saveSettings();
+	void applyDiffColors();
+	void applyTheme();
+	void syncPanel();
+	void refreshPanes();
+	void afterDiffNavigation();
+	void afterBufferChange();
+	void updatePaneHeader(int pane);
+	QString untitledName(int pane) const;
+	void updatePaneStatus(int pane);
+	void updateDiffStatus();
+	void updateActions();
+	void updateAnimationTimer();
+
+	// interaction state machine (ChildWnd_On* parity)
+	void paneMousePressed(int pane, QMouseEvent *event);
+	void paneMouseReleased(int pane, QMouseEvent *event);
+	void paneMouseMoved(int pane, QMouseEvent *event);
+	void paneDoubleClicked(int pane, QMouseEvent *event);
+	void paneWheel(int pane, class QWheelEvent *event);
+	void paneKey(int pane, class QKeyEvent *event);
+	void paneContextMenu(int pane, const QPoint &globalPos);
+	void commitFloatingImage(int pane);
+	void cutOrCopySelectionToFloating(int pane, bool copy);
+	QRect realRect(int pane, const QRect &viewRect) const;
+	void scrollAllTo(int x, int y, bool force);
+	void setActivePane(int pane);
+	bool savePane(int pane, QString *error);
+
+	int mergeTarget(int sourceSide) const
+	{
+		return m_paneCount == 3 ? 1 : 1 - sourceSide;
+	}
+
+	std::unique_ptr<CImgMergeBuffer> m_buffer;
+	QString m_paths[3];
+	lm::FileStamp m_stamps[3]; // the files as loaded or last saved here
+	int m_paneCount = 2;
+	QString m_saveAsPath; // where a pane is saved, by the command line
+	int m_activePane = 0;
+	double m_zoom = 1.0;
+
+	ImagePane *m_panes[3] = {};
+	QWidget *m_columns[3] = {};
+	// WinMerge's path bar over each pane
+	FilepathEdit *m_headers[3] = {};
+	QString m_headerTexts[3];
+	QString m_descriptions[3];
+	std::function<bool()> m_savePrompt;
+	QLabel *m_paneStatus[3] = {};
+	QSplitter *m_splitter = nullptr;
+	QLabel *m_status = nullptr;
+	DiffMapWidget *m_diffMap = nullptr;
+	QTimer *m_animTimer = nullptr;
+
+	// settings panel widgets (synced from the buffer)
+	QCheckBox *m_chkHighlight = nullptr;
+	QCheckBox *m_chkBlink = nullptr;
+	QSlider *m_sldBlockSize = nullptr;
+	QSlider *m_sldBlockAlpha = nullptr;
+	QSlider *m_sldThreshold = nullptr;
+	QSlider *m_sldOverlayAlpha = nullptr;
+	QSlider *m_sldZoom = nullptr;
+	QComboBox *m_cmbInsDel = nullptr;
+	QComboBox *m_cmbOverlay = nullptr;
+	QSpinBox *m_spnPage = nullptr;
+	QLabel *m_lblBlockSize = nullptr;
+	QLabel *m_lblBlockAlpha = nullptr;
+	QLabel *m_lblThreshold = nullptr;
+	QLabel *m_lblOverlayAlpha = nullptr;
+	QLabel *m_lblZoom = nullptr;
+	QWidget *m_panel = nullptr;
+	bool m_syncingPanel = false;
+	bool m_syncingScroll = false;
+
+	QAction *m_actUndo = nullptr;
+	QAction *m_actRedo = nullptr;
+	QAction *m_actSave = nullptr;
+
+	int m_draggingMode = 1; // MOVE (WinMerge default)
+	int m_draggingCurrent = 0;
+	bool m_dragging = false;
+	QPoint m_dragOrigin;    // device coords in the originating pane
+	bool m_wasModified = false;
+
+	friend class DiffMapWidget;
+};

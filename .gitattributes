@@ -1,0 +1,9 @@
+# Grammar inputs and committed generated sources must be identical on all hosts.
+engine/Src/FilterEngine/FilterLexer.re text eol=lf
+engine/Src/FilterEngine/FilterParser.y text eol=lf
+engine/ports/generated/* text eol=lf
+*.sh text eol=lf
+# Encoding and byte-comparison fixtures must keep their authored bytes.
+tests/Data/** -text
+tests/TestData/** -text
+tests/gtest/TestData/** -text

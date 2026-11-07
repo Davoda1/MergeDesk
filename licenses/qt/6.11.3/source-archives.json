@@ -1,0 +1,9 @@
+[
+  {
+    "module": "qt-everywhere",
+    "version": "6.11.3",
+    "url": "https://download.qt.io/official_releases/qt/6.11/6.11.3/single/qt-everywhere-src-6.11.3.tar.xz",
+    "sha256": "ad0112f2aef1b94b42a7ab653cebda2f7fc9ba88ef509ec456b17be80b0bfdab",
+    "size": 1020081224
+  }
+]

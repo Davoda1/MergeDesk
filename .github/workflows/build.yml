@@ -1,0 +1,315 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 davoda1
+name: Native builds
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform gates (linux includes tests and release packages)'
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - linux
+          - linux-packages
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
+    name: Windows x64 · MSVC and Qt 6.11.3
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binary-cache
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+      - name: Install Qt including WebEngine
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
+        with:
+          version: '6.11.3'
+          arch: win64_msvc2022_64
+          modules: 'qtimageformats qtwebchannel qtpositioning qtwebengine'
+          # The 3.3.0 release cannot read Qt 6.11's Windows repository layout.
+          # Pin upstream's reviewed Windows layout fix (aqtinstall PR #1000).
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b
+          cache: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: microsoft/vcpkg
+          ref: 351757dd7b0c6518412ca98b3ef7982861a47fc6
+          path: .vcpkg
+      - name: Cache compiled dependencies
+        id: vcpkg-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .vcpkg-binary-cache
+          key: windows-vcpkg-351757dd-x64-${{ hashFiles('cmake/windows/vcpkg.json') }}
+          restore-keys: |
+            windows-vcpkg-351757dd-x64-
+      - name: Prepare vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & .\.vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install native dependencies
+        shell: pwsh
+        run: |
+          & .\.vcpkg\vcpkg.exe install --triplet x64-windows `
+            "--x-manifest-root=$env:GITHUB_WORKSPACE/cmake/windows" `
+            "--x-install-root=$env:GITHUB_WORKSPACE/build/vcpkg_installed"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve completed dependency cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .vcpkg-binary-cache
+          key: windows-vcpkg-351757dd-x64-${{ hashFiles('cmake/windows/vcpkg.json') }}
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_AUTOGEN_ORIGIN_DEPENDS=OFF `
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            "-DVCPKG_MANIFEST_DIR=$env:GITHUB_WORKSPACE/cmake/windows" `
+            "-DVCPKG_INSTALLED_DIR=$env:GITHUB_WORKSPACE/build/vcpkg_installed" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_MANIFEST_INSTALL=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build native application and tests
+        id: native-build
+        # Compile independent targets after an error so a native port failure
+        # reports all compiler diagnostics; Ninja still returns failure.
+        run: cmake --build build --parallel 3 -- -k 0
+      - name: Verify embedded Windows application and test manifests
+        shell: pwsh
+        run: |
+          ./packaging/windows/verify_manifest.ps1 -Executable build/app/MergeDesk.exe
+          ./packaging/windows/verify_manifest.ps1 -Executable build/tests/libremerge-tests.exe
+      - name: Engine and native image tests
+        run: ctest --test-dir build --output-on-failure --parallel 3
+      - name: Application selftests
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        shell: pwsh
+        run: ./packaging/windows/run-selftests.ps1 -Executable build/app/MergeDesk.exe -Web
+      - name: Package portable application
+        shell: pwsh
+        run: ./packaging/windows/package.ps1 -BuildDirectory build -OutputDirectory dist
+      - name: Upload portable build artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: MergeDesk-1.0.0-windows-x64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+            dist/*/BUILD-METADATA.json
+            dist/*/TEST-RESULTS.json
+            dist/*/BUILD-TREE-TEST-RESULTS.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-build-diagnostics
+          path: |
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/Testing/Temporary/*.log
+            build/vcpkg-manifest-install.log
+            build/vcpkg_installed/vcpkg/issue_body.md
+            build/vcpkg_installed/vcpkg/status
+            build/app/TEST-RESULTS.json
+            dist/*/TEST-RESULTS.json
+          if-no-files-found: ignore
+
+  linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
+    name: GNU/Linux x64 · Qt 6.11.3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build python3-venv \
+            pkg-config libpoco-dev libicu-dev libboost-dev libarchive-dev libgtest-dev \
+            re2c lemon xvfb xauth patchelf squashfs-tools dbus python3-dbus python3-gi \
+            libgtk-3-0t64 libnss3 libasound2t64 libxcomposite1 libxdamage1 libxrandr2 \
+            libxtst6 libxshmfence1 libxkbfile1 libxcb-dri3-0 libgbm1 libinput10 libvulkan-dev
+      - name: Prepare isolated Qt installer
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qt-installer"
+          echo "$RUNNER_TEMP/qt-installer/bin" >> "$GITHUB_PATH"
+      - name: Install maintained Qt SDK including WebEngine
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
+        with:
+          version: '6.11.3'
+          arch: linux_gcc_64
+          modules: 'qtimageformats qtwebchannel qtpositioning qtwebengine'
+          aqtversion: '==3.3.0'
+          setup-python: false
+          cache: true
+      - name: Verify native WebEngine helper permissions
+        run: |
+          qt_webengine_helper="$QT_ROOT_DIR/libexec/QtWebEngineProcess"
+          test -f "$qt_webengine_helper"
+          test ! -L "$qt_webengine_helper"
+          test "$(head -c 4 "$qt_webengine_helper")" = "$(printf '\177ELF')"
+          chmod 0755 "$qt_webengine_helper"
+          test -x "$qt_webengine_helper"
+      - name: Verify generated filter parser
+        run: python3 packaging/regenerate_filter_parser.py --check
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+      - name: Build
+        run: cmake --build build --parallel 3
+      - name: Engine and native image tests
+        run: ctest --test-dir build --output-on-failure --parallel 3
+      - name: Application selftests
+        run: packaging/run_selftests.sh build/app/mergedesk
+      - name: Native desktop file choosers
+        run: |
+          /usr/bin/python3 packaging/linux/verify_native_dialogs.py \
+            --executable "$PWD/build/app/mergedesk" --output build/NATIVE-DIALOGS.json
+      - name: MergeDesk feature and file-safety tests
+        run: |
+          build/app/mergedesk --selftest-safety
+          build/app/mergedesk --selftest-mergedesk-features
+      - name: Rendered webpage comparison
+        run: QT_QPA_PLATFORM=xcb QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu QT_QUICK_BACKEND=software xvfb-run -a build/app/mergedesk --selftest-web
+      - name: Upload native chooser evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ubuntu-native-dialog-evidence
+          path: build/NATIVE-DIALOGS.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  linux-packages:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-packages'
+    name: Debian 12 baseline · Qt 6.11.3 · tar, DEB and AppImage
+    runs-on: ubuntu-24.04
+    container: debian:12
+    timeout-minutes: 120
+    env:
+      QT_QPA_PLATFORM: offscreen
+      # The CI container runs as root. This applies only to tests in this
+      # isolated build job; no sandbox override is shipped in the packages.
+      QTWEBENGINE_DISABLE_SANDBOX: '1'
+    steps:
+      - name: Install native Debian build dependencies
+        run: |
+          sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git build-essential \
+            cmake ninja-build python3 python3-venv pkg-config libpoco-dev libicu-dev \
+            libboost-dev libarchive-dev libgtest-dev re2c lemon xvfb xauth patchelf \
+            squashfs-tools file fonts-dejavu-core dbus python3-dbus python3-gi \
+            libgtk-3-0 libnss3 libasound2 libxcomposite1 libxdamage1 libxrandr2 \
+            libxtst6 libxshmfence1 libxkbfile1 libxcb-dri3-0 libgbm1 libinput10 libvulkan-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare isolated Qt installer
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qt-installer"
+          echo "$RUNNER_TEMP/qt-installer/bin" >> "$GITHUB_PATH"
+      - name: Install maintained Qt SDK including WebEngine
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
+        with:
+          version: '6.11.3'
+          arch: linux_gcc_64
+          modules: 'qtimageformats qtwebchannel qtpositioning qtwebengine'
+          aqtversion: '==3.3.0'
+          setup-python: false
+          install-deps: nosudo
+          cache: true
+      - name: Verify native WebEngine helper permissions
+        run: |
+          qt_webengine_helper="$QT_ROOT_DIR/libexec/QtWebEngineProcess"
+          test -f "$qt_webengine_helper"
+          test ! -L "$qt_webengine_helper"
+          test "$(head -c 4 "$qt_webengine_helper")" = "$(printf '\177ELF')"
+          chmod 0755 "$qt_webengine_helper"
+          test -x "$qt_webengine_helper"
+      - name: Configure native glibc 2.36 build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib
+      - name: Build
+        run: cmake --build build --parallel 3
+      - name: Engine and native image tests
+        run: ctest --test-dir build --output-on-failure --parallel 3
+      - name: Package and verify relocated native binaries
+        run: |
+          python3 packaging/linux/package.py --build-dir build --output-dir dist \
+            --require-debian12 --qt-root "$QT_ROOT_DIR"
+      - name: Verify Debian package installation
+        run: |
+          dpkg -i dist/mergedesk_1.0.0_amd64.deb
+          # Test the installed private runtime without the installer's SDK paths.
+          unset LD_LIBRARY_PATH QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH \
+            QML_IMPORT_PATH QML2_IMPORT_PATH QTWEBENGINEPROCESS_PATH \
+            QTWEBENGINE_RESOURCES_PATH QTWEBENGINE_LOCALES_PATH
+          test -f /usr/bin/mergedesk
+          test ! -L /usr/bin/mergedesk
+          file /usr/bin/mergedesk
+          /usr/bin/mergedesk --selftest-safety
+          /usr/bin/mergedesk --selftest-mergedesk-features
+          /usr/bin/mergedesk --selftest-tree-sitter
+          QT_QPA_PLATFORM=xcb QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu QT_QUICK_BACKEND=software xvfb-run -a /usr/bin/mergedesk --selftest-web
+          /usr/bin/python3 packaging/linux/verify_native_dialogs.py \
+            --executable /usr/bin/mergedesk --expected-plugin-root /usr/lib/mergedesk/plugins \
+            --output dist/INSTALLED-NATIVE-DIALOGS.json
+      - name: Upload release packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: MergeDesk-1.0.0-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.sha256
+            dist/APPIMAGE-BUILD-TOOLS.json
+            dist/INSTALLED-NATIVE-DIALOGS.json
+            dist/*/BUILD-METADATA.json
+            dist/*/TEST-RESULTS.json
+            dist/*/NATIVE-DIALOGS.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: debian-build-diagnostics
+          path: |
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/Testing/Temporary/*.log
+            dist/*/TEST-RESULTS.json
+            dist/*/NATIVE-DIALOGS.json
+            dist/INSTALLED-NATIVE-DIALOGS.json
+          if-no-files-found: ignore

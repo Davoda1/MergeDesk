@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MergeDesk
+GenericName=File and folder comparison
+Comment=Compare and merge files and folders
+Exec=mergedesk %F
+Icon=mergedesk
+Terminal=false
+Categories=Development;Utility;
+MimeType=text/plain;inode/directory;
+StartupWMClass=MergeDesk

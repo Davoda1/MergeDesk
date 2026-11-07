@@ -1,0 +1,6 @@
+{
+  "version": "6.11.3",
+  "platforms": ["windows-x64", "linux-x86_64"],
+  "release_notes": "https://www.qt.io/blog/qt-6.11.3-released",
+  "notices_directory": "licenses/qt/6.11.3"
+}

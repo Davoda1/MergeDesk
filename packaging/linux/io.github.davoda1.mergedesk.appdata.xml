@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+<id>io.github.davoda1.mergedesk</id>
+<name>MergeDesk</name><summary>Native Qt6 comparison and merging</summary>
+<developer id="davoda1"><name>davoda1</name></developer>
+<metadata_license>CC0-1.0</metadata_license><project_license>GPL-3.0-or-later</project_license>
+<description><p>Compare and merge files, folders, tables, images and binary data using a familiar desktop interface.</p></description>
+<launchable type="desktop-id">mergedesk.desktop</launchable>
+<url type="homepage">https://github.com/Davoda1/MergeDesk</url>
+<releases><release version="1.0.0" date="2026-11-06"/></releases>
+</component>

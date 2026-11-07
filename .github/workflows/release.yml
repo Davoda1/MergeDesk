@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 davoda1
+name: Release packages
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing stable version tag to publish, for example v1.0.0'
+        required: true
+        default: v1.0.0
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify exact-commit release gates
+    if: github.event_name == 'push' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 145
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      target_sha: ${{ steps.gates.outputs.target_sha }}
+      automation_sha: ${{ steps.gates.outputs.automation_sha }}
+    steps:
+      # Tags are data, never the source of privileged promotion code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Wait for complete native and repository checks
+        id: gates
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: python3 packaging/release/promote.py verify --tag "$RELEASE_TAG" --wait-seconds 7200
+
+  publish:
+    name: Verify assets and publish release
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      # Freeze the trusted master automation used by the read-only job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.automation_sha }}
+          persist-credentials: false
+      - name: Verify packages, upload a draft, and publish verified assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_SHA: ${{ needs.verify.outputs.target_sha }}
+        run: |
+          python3 packaging/release/promote.py publish --tag "$RELEASE_TAG" \
+            --expected-sha "$RELEASE_SHA" --wait-seconds 0

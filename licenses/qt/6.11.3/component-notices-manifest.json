@@ -1,0 +1,1420 @@
+{
+  "qt_version": "6.11.3",
+  "pages": [
+    {
+      "title": "Third-Party Code Used in Qt",
+      "url": "https://doc.qt.io/qt-6.11/licenses-used-in-qt.html",
+      "sha256": "4a998da5a80607a663b089473301dbfb6f7dec939aaa0768074043e1dba1018a"
+    },
+    {
+      "title": "Macros for Building with CMake",
+      "url": "https://doc.qt.io/qt-6.11/qt-attribution-cmake-macros.html",
+      "sha256": "0989654d9f383d210a2c9cf551922c37f5b3659a1cc97c054e3120bdfd4143fe"
+    },
+    {
+      "title": "LLVM Attribution",
+      "url": "https://doc.qt.io/qt-6.11/qt-attribution-llvm.html",
+      "sha256": "4d30cad4e4fe46576a4b62a339d79561b3213ae2e0e3f00be53a41165712257f"
+    },
+    {
+      "title": "Mesa llvmpipe",
+      "url": "https://doc.qt.io/qt-6.11/qt-attribution-llvmpipe.html",
+      "sha256": "227cff1f517ad030426ccb621ec84d746b7f7abbc0970fbde353cf7b40805abb"
+    },
+    {
+      "title": "Open Asset Import Library, version 6.0.5",
+      "url": "https://doc.qt.io/qt-6.11/qt3d-attribution-assimp.html",
+      "sha256": "d7a7710e3990777d3281d16ba6d26f69c6b6c0ccdb537844af599b1132cd22ca"
+    },
+    {
+      "title": "Dear ImGui - ProggyClean.ttf",
+      "url": "https://doc.qt.io/qt-6.11/qt3d-attribution-imgui-proggyclean.html",
+      "sha256": "8601ee14b8df2932a74522d7446870f44ceadc6b12cba471e198a118f99229ce"
+    },
+    {
+      "title": "Dear ImGui - stb",
+      "url": "https://doc.qt.io/qt-6.11/qt3d-attribution-imgui-stb.html",
+      "sha256": "a1104792d0ec4793d4a44cd966a9de97e243acffda710c9a66faf6836f06d789"
+    },
+    {
+      "title": "Dear ImGui, version v1.91.0",
+      "url": "https://doc.qt.io/qt-6.11/qt3d-attribution-imgui.html",
+      "sha256": "a0f8c0632222b47e700ccd4dcf1ef669ca524485df6cd28c9fc950d6d3abbabd"
+    },
+    {
+      "title": "BlueZ",
+      "url": "https://doc.qt.io/qt-6.11/qtbluetooth-attribution-bluez.html",
+      "sha256": "38ac26c2170ff3122403b706fcd74cd54233f792c83288f6ba8f8230bcaada60"
+    },
+    {
+      "title": "NanoVG, version f93799c",
+      "url": "https://doc.qt.io/qt-6.11/qtcanvaspainter-attribution-nanovg.html",
+      "sha256": "3582dd271b3af25557a36e681242b3f036b9ebfe250f39aab920e9a99d9eb2b5"
+    },
+    {
+      "title": "BLAKE2 (reference implementation), version ed1974ea83433eba7b2d95c5dcd9ac33cb847913",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-blake2.html",
+      "sha256": "dd9e28aaa18584cbff37d5423d32e963f24aa2755292e4f226d430d1a44bcb04"
+    },
+    {
+      "title": "Efficient Binary-Decimal and Decimal-Binary Conversion Routines for IEEE Doubles, version 3.4.0",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-doubleconversion.html",
+      "sha256": "f9c0abd7f91bdb3b4c08260f2040e0f2f55574cfbbc595724ea679e500752750"
+    },
+    {
+      "title": "Easing Equations by Robert Penner",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-easing.html",
+      "sha256": "b5f91fa555796c466e83a0377ce659c948d558cc8c8a03ba495b747e4d5fe71d"
+    },
+    {
+      "title": "forkfd",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-forkfd.html",
+      "sha256": "ff14b22ee2a0be7fc777d3f3e2a810e68cd7ef81e4a9c8cf2e36c401a79cd095"
+    },
+    {
+      "title": "MD4",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-md4.html",
+      "sha256": "ca89ef6f55057c6a8feccfbb97a08ce487d095c546a928728d477a21b384a223"
+    },
+    {
+      "title": "MD5",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-md5.html",
+      "sha256": "8d628ae88969138118889f5ce2562d64f220f09fd2060c2695d9402439e30f41"
+    },
+    {
+      "title": "PCRE2 - Stack-less Just-In-Time Compiler, version 10.49",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-pcre2-sljit.html",
+      "sha256": "3f09b439f0653890916f9b9c460a3d8e0ab05b7fffc0a108b0d79f5499476c37"
+    },
+    {
+      "title": "PCRE2, version 10.49",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-pcre2.html",
+      "sha256": "6ba069b4fdf0bc5721c0b552833d650c1c39335b827b2669d19ba18966c28323"
+    },
+    {
+      "title": "QEventDispatcher on macOS",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-qeventdispatcher-cf.html",
+      "sha256": "2457d1fac67945acb69d14eefaa9c51fd765893043cf7993b28919f61d4dee5e"
+    },
+    {
+      "title": "Secure Hash Algorithms SHA-384 and SHA-512",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-rfc6234.html",
+      "sha256": "8fdf9f30901ee99c3d7c08d0954a65a54ab60b8b07086a3383d1aab35f6573ff"
+    },
+    {
+      "title": "Secure Hash Algorithm SHA-1",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-sha1.html",
+      "sha256": "955ba38885e7ac224a5bcb5db5cfdb1c7e183a0e33f2b0b6aebc1f8148eb73c4"
+    },
+    {
+      "title": "Secure Hash Algorithm SHA-3 - brg_endian, version 1.0.0",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-sha3-endian.html",
+      "sha256": "656f82d4bc52532a1119ecbc94e5a32bed491d5a50d4fc6172cb5241724a82d0"
+    },
+    {
+      "title": "Secure Hash Algorithm SHA-3 - Keccak, version 3.2",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-sha3-keccak.html",
+      "sha256": "f8cfb851148fac111c48f9333521d40187ed0e58aa9819db34ce2936665ae3c0"
+    },
+    {
+      "title": "SipHash Algorithm",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-siphash.html",
+      "sha256": "f5222ee62af4505497e9a15c19a31f6d6b6ea30e3f2701d4c07a99b13be97641"
+    },
+    {
+      "title": "Apache Tika MimeType Definitions, version c29724782854bb5a319f4a1940d0828a58ace3f9",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-tika-mimetypes.html",
+      "sha256": "c26ed0fb3cc2581aea1adc8691f9182ac3501f376dde563d99f68955830054d6"
+    },
+    {
+      "title": "TinyCBOR, version 7.0",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-tinycbor.html",
+      "sha256": "fb768bef7b358068c1795c4d835481119931db88760bd98463b09df785657e82"
+    },
+    {
+      "title": "tl::expected, version 41d3e1f48d682992a2230b2a715bca38b848b269",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-tlexpected.html",
+      "sha256": "731364fa129d006cb2de567f280614342a3de6d24053a148a06b14c75d258711"
+    },
+    {
+      "title": "Unicode Character Database (UCD), version 36",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-unicode-character-database.html",
+      "sha256": "9f31d1c6c5e4fee3bab1d3383572afdea050731727dbb5341a37954899a71312"
+    },
+    {
+      "title": "Unicode Common Locale Data Repository (CLDR), version v48.2",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-unicode-cldr.html",
+      "sha256": "4eb8dc110bed7dd0d7339fc47cf1f4c83d40cbbfd4c3fd18bc87bfc72f926908"
+    },
+    {
+      "title": "Data Compression Library (zlib), version 1.3.2",
+      "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-zlib.html",
+      "sha256": "f0dcd0314f8b9f6e84f6cb4db1229a11f819a8d3afdfa47650688e6c67338077"
+    },
+    {
+      "title": "Text Codecs: Big5, Big5-HKSCS",
+      "url": "https://doc.qt.io/qt-6.11/qtcore5compat-attribution-qbig5codecs.html",
+      "sha256": "24dbaea4bcce0f66ae5e488ae42d6c8049987ba972b217b3a0533556bfbe44f1"
+    },
+    {
+      "title": "Text Codec: GBK",
+      "url": "https://doc.qt.io/qt-6.11/qtcore5compat-attribution-qbkcodec.html",
+      "sha256": "61f3cfb80f3ca3a89c2184e6832dc8a1b0511a94f6867a29eecd71cc2a5fa774"
+    },
+    {
+      "title": "Text Codec: EUC-JP",
+      "url": "https://doc.qt.io/qt-6.11/qtcore5compat-attribution-qeucjpcodec.html",
+      "sha256": "503c1e3698fc06ca472558dce7418e849ea3d64c10cc36ca77ddbafe1b65ea66"
+    },
+    {
+      "title": "Text Codec: EUC-KR",
+      "url": "https://doc.qt.io/qt-6.11/qtcore5compat-attribution-qeuckrcodec.html",
+      "sha256": "29cd95b6a8f7548f3a50069b34f0edf67ed08db393680623263416935d4cf776"
+    },
+    {
+      "title": "Text Codec: ISO 2022-JP (JIS)",
+      "url": "https://doc.qt.io/qt-6.11/qtcore5compat-attribution-qjiscodec.html",
+      "sha256": "87498a8b08f46024b05f4da035a266e7e15e95ddb024b0236ae2eed6870283cf"
+    },
+    {
+      "title": "Text Codec: Shift-JIS",
+      "url": "https://doc.qt.io/qt-6.11/qtcore5compat-attribution-qsjiscodec.html",
+      "sha256": "b47c1a86591417527eceab73d0efd3536497ea5391f3a5505914203e1c19fe0e"
+    },
+    {
+      "title": "Text Codec: TSCII",
+      "url": "https://doc.qt.io/qt-6.11/qtcore5compat-attribution-qtsciicodec.html",
+      "sha256": "b698e9f6a6a5a3c9214d12ff9a59dec6fab91e5f79e30e4dcd40936e1397a326"
+    },
+    {
+      "title": "libdbus-1 headers, version 1.13.12",
+      "url": "https://doc.qt.io/qt-6.11/qtdbus-attribution-libdbus-1-headers.html",
+      "sha256": "821f9ee5961c59aa3d77a8d3d0e7a3faad36900404615b66a6d36115f7dd6d14"
+    },
+    {
+      "title": "Adobe Glyph List For New Fonts, version 1.7",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-aglfn.html",
+      "sha256": "6d0633ed5e68bc3b48faeffaa3960155981ce276d6c5e39363766d67b4d63042"
+    },
+    {
+      "title": "Native Style for Android",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-android-native-style.html",
+      "sha256": "16f3101858514cd67ce1f9a28c9e01e8d24939e82bba953c6e79f8e96ef6f2bf"
+    },
+    {
+      "title": "Cocoa Platform Plugin",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-cocoa-platform-plugin.html",
+      "sha256": "bf886848dc91f1ed7c4ddbc431a123df162f31819e45c9734edf1e28daef8a15"
+    },
+    {
+      "title": "D3D12 Memory Allocator, version f128d39b7a95b4235bd228d231646278dc6c24b2",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-d3d12memoryallocator.html",
+      "sha256": "9d5afad21b8291e537b0ffeb497e74e989f0d22e023a8eeeb0d98f66543191ba"
+    },
+    {
+      "title": "DejaVu Fonts, version 2.37",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-dejayvu.html",
+      "sha256": "c8c10a4988ef8c3c3ea6ed507685110d8a1b212d4ca27c9bc1613f243369d2b7"
+    },
+    {
+      "title": "Emoji Segmenter, version 0.4.0",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-emoji-segmenter.html",
+      "sha256": "05ced9f7b1ef394f127357b51e926b4853feda2503e9e60088165194fa634857"
+    },
+    {
+      "title": "Freetype 2 - Bitmap Distribution Format (BDF) support",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-freetype-bdf.html",
+      "sha256": "17d799927983162b6fd6bdc533c0f250d2652ec4efaaa8d1f356d01d301b6c74"
+    },
+    {
+      "title": "Freetype 2 - Portable Compiled Format (PCF) support",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-freetype-pcf.html",
+      "sha256": "63a33f5a22028ba6455789c56a0a5d626becc87904a3ea5ce8badfb7ef985d47"
+    },
+    {
+      "title": "Freetype 2 - zlib",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-freetype-zlib.html",
+      "sha256": "4f646f506a240b60bc6fcc106eaff6ed3cb2ff6b5390005c12737a57a80bb26d"
+    },
+    {
+      "title": "Freetype 2, version 2.15.0",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-freetype.html",
+      "sha256": "34c4766d5c88f83616dfe657e6e93a6a52ef675c7832e171b0d1de568a7dae4f"
+    },
+    {
+      "title": "Anti-aliasing rasterizer from FreeType 2",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-grayraster.html",
+      "sha256": "95ecf11acd3339cdc8458ea7f2ce94e655f5325890863eb4184e4c016cf8bc6b"
+    },
+    {
+      "title": "HarfBuzz-NG, version 14.6.0",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-harfbuzz-ng.html",
+      "sha256": "8586f07c6eb10fba61391a52e73b2c593009ccb163ef4353282906eba5bf3d60"
+    },
+    {
+      "title": "sRGB color profile icc file",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-icc-srgb-color-profile.html",
+      "sha256": "f76b65bfae392aad299c88541478911059d01a1be4a1b63863e6e919c2735d4d"
+    },
+    {
+      "title": "LibJPEG-turbo, version 3.2.0",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-libjpeg.html",
+      "sha256": "d2da62bbb914f7949817c1ae39257e7a265b13b682574d805394b47bf5f5d345"
+    },
+    {
+      "title": "LibPNG, version 1.6.59",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-libpng.html",
+      "sha256": "2fb5004b4c6fa61a9f6d1e7eabb50c2feba51d576eb188318bf42bcd0d0c11d8"
+    },
+    {
+      "title": "MD4C, version 0.6.0",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-md4c.html",
+      "sha256": "d585934d1bf41796727b921735f864a0e7aaa11dba9d7add0a5af4758458825e"
+    },
+    {
+      "title": "OpenGL ES 2 Headers, version Revision 27673",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-opengl-es2-headers.html",
+      "sha256": "3e65d08abbf702572b714e83ee517199087e013186f7348b0d1e003fd30d52ab"
+    },
+    {
+      "title": "OpenGL Headers, version Revision 27684",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-opengl-headers.html",
+      "sha256": "39cbf6282ac0f091c0339bb46df2cc38f5174099c73aaa100deb96807d1aecdf"
+    },
+    {
+      "title": "Pixman, version 0.17.12",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-pixman.html",
+      "sha256": "759a36e4056a17dde74932774cf2cc9e656237f02c76cbdcb89332f765a421b9"
+    },
+    {
+      "title": "Mipmap generator for D3D12, version 0aa79bad78992da0b6a8279ddb9002c1753cb849",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-rhi-miniengine-d3d12-mipmap.html",
+      "sha256": "243d49f01d747cc28a08d767a41e8ac0a1e6aaa94d8c438be389ded428e9fc51"
+    },
+    {
+      "title": "Smooth Scaling Algorithm",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-smooth-scaling-algorithm.html",
+      "sha256": "5343d7dc05bb656fefd69ada0bae410ca22d3b55f17b7d4bfdf618d14e3e249d"
+    },
+    {
+      "title": "Vulkan API Registry, version 1.4.308",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-vulkan-xml-spec.html",
+      "sha256": "7afa9efc4f8f34b59ac36757a5f23cee8be9b12b5b1f0814bd79493576ae1d74"
+    },
+    {
+      "title": "Vulkan Memory Allocator, version 3.2.1",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-vulkanmemoryallocator.html",
+      "sha256": "6685cac0aed12ab0db9d3da562500ec8151ed8e786b1df1a7f994255f467ab7a"
+    },
+    {
+      "title": "WebGradients",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-webgradients.html",
+      "sha256": "fb38966fe162f123b3843e903e01db8343a855cd5d1c87c683075b9099f3d574"
+    },
+    {
+      "title": "Wintab API",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-wintab.html",
+      "sha256": "a82f61fa25c8d4a9a61333b7260ba666af1bc1cc63ddf2eb8e01b6a5990f8b23"
+    },
+    {
+      "title": "XCB-XInput",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-xcb-xinput.html",
+      "sha256": "63cd9b766f065d4806ffe09a84d96bf312a0ea3e469013172a89a3d2ec4d814a"
+    },
+    {
+      "title": "X Server helper",
+      "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-xserverhelper.html",
+      "sha256": "26c02e9d654879f43294939211244e1d2230cbcbad407db2afa646ab7ce31b6c"
+    },
+    {
+      "title": "TIFF Software Distribution (libtiff), version 4.7.2",
+      "url": "https://doc.qt.io/qt-6.11/qtimageformats-attribution-libtiff.html",
+      "sha256": "dfd9459dbe56b5245ad115f9a8981c37a7c70f76e7a3b9f67afad0e6cea94ace"
+    },
+    {
+      "title": "WebP (libwebp), version 1.6.0",
+      "url": "https://doc.qt.io/qt-6.11/qtimageformats-attribution-libwebp.html",
+      "sha256": "e133db1796da7dd217838e6c29ddf4b657482a436127b67600ebdddec6dee415"
+    },
+    {
+      "title": "DR Libs, version 0.14.6-snapshot-ee937527",
+      "url": "https://doc.qt.io/qt-6.11/qtmultimedia-attribution-dr-libs.html",
+      "sha256": "683bd7355fc10fafa391e887c4371f57d3ff96a7d05ec7cb8c9234b19edbfea6"
+    },
+    {
+      "title": "boost",
+      "url": "https://doc.qt.io/qt-6.11/qtmultimedia-attribution-ffmpeg-boost.html",
+      "sha256": "bd88995c6ccc7c666254cc7071e2cf35a17f49614196f37aa4aefc8d7101c500"
+    },
+    {
+      "title": "libjpeg",
+      "url": "https://doc.qt.io/qt-6.11/qtmultimedia-attribution-ffmpeg-libjpeg.html",
+      "sha256": "1f1f0b3acd1401910808a51b9ef54fe09c9dd9715e05501b1a0fc329026e65dc"
+    },
+    {
+      "title": "zlib",
+      "url": "https://doc.qt.io/qt-6.11/qtmultimedia-attribution-ffmpeg-zlib.html",
+      "sha256": "07f6eb29f432a3fbdd56d8400fdae5ed933b6fe1ce395f2ea65fa2faa0d237f6"
+    },
+    {
+      "title": "FFmpeg, version 7.1.5",
+      "url": "https://doc.qt.io/qt-6.11/qtmultimedia-attribution-ffmpeg.html",
+      "sha256": "7f08c8386d50514b83c56a1b16334312e33727fadf23ddc01b6a599fbfd58f66"
+    },
+    {
+      "title": "Signalsmith Stretch, version 1.0.0",
+      "url": "https://doc.qt.io/qt-6.11/qtmultimedia-attribution-signalsmith-stretch.html",
+      "sha256": "a225b983e093887654aea78c3c29701e9826a6e06d284f5ffefd9e48da0187af"
+    },
+    {
+      "title": "Two-Level Segregated Fit, version v3.1",
+      "url": "https://doc.qt.io/qt-6.11/qtmultimedia-attribution-tlfs.html",
+      "sha256": "da696b851b914e26735cf85166a6d76496686e0d14931c478940727ec35355a6"
+    },
+    {
+      "title": "libpsl - C library to handle the Public Suffix List, version 664f3dc85259ec65e30248a61fa1c45b7b0e4c3f",
+      "url": "https://doc.qt.io/qt-6.11/qtnetwork-attribution-libpsl.html",
+      "sha256": "d5d3fef9197e9a22f8d0b640f479f8a99e5f75b13db16ad37152334f4aebdbaf"
+    },
+    {
+      "title": "The Public Suffix List, version 2026-05-14_08-35-31_UTC",
+      "url": "https://doc.qt.io/qt-6.11/qtnetwork-attribution-psl-data.html",
+      "sha256": "d46baa07bf24988bae7c5cfe827027c172c8055689aa072a205095e0f74d48f1"
+    },
+    {
+      "title": "Open62541, version 1.4.14",
+      "url": "https://doc.qt.io/qt-6.11/qtopcua-attribution-open62541.html",
+      "sha256": "795735c62f9d96584f673db5df5369cf693151b326239e6e75648b3d7602f635"
+    },
+    {
+      "title": "Abseil",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-abseil.html",
+      "sha256": "d61ae57666db1983319190b1e4db8320a7d524b3d07b64ea77065031f9835035"
+    },
+    {
+      "title": "fast_float",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-fast-float.html",
+      "sha256": "d8667fb34ba57ae0e2dfc87a904a7cbf3d40900d2d99f6f89faf767e211e6ac5"
+    },
+    {
+      "title": "FreeType",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-freetype.html",
+      "sha256": "6ad25655b82d98430f6dfc79ca38bf942b97472bbfae6657a4dff18ad73209d2"
+    },
+    {
+      "title": "icu",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-icu.html",
+      "sha256": "2168585454d9535671db39fac5a9ebaa17732f3b430484ebf1bf24cd8386f75e"
+    },
+    {
+      "title": "libjpeg-turbo",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-libjpeg-turbo.html",
+      "sha256": "6d07cad6891127294ee7a6e7b2fd9bca4a0b4074af5edfade824f2a9598c0a56"
+    },
+    {
+      "title": "libpng",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-libpng.html",
+      "sha256": "6196fd96063d5736c56bb34d8cd86b5570fdefee03c8f56e8fde9674f822bed8"
+    },
+    {
+      "title": "PDFium",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-pdfium.html",
+      "sha256": "41551e18ef2127b6dec9b76222b7e5cbdd8d33595a09a1b248350c221692ffd9"
+    },
+    {
+      "title": "The Chromium Project",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-the-chromium-project.html",
+      "sha256": "faa24daddbe4cb114ec46e6ad24e87b75e68fd2ef80a72269c863a7a856ce2d2"
+    },
+    {
+      "title": "zlib",
+      "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-zlib.html",
+      "sha256": "420f6ffabbb04726e4078fd0457ee1f057a60e689ee855edd1f040810fc6dd96"
+    },
+    {
+      "title": "Clip2Tri Polygon Triangulation Library, version commit f62a734d22733814b8a970ed8a68a4d94c24fa5f",
+      "url": "https://doc.qt.io/qt-6.11/qtpositioning-attribution-clip2tri.html",
+      "sha256": "01d1da29faff64fe0e7046d877759e29b017cef4426d74a8a21ada5d0673f7a7"
+    },
+    {
+      "title": "Clipper Polygon Clipping Library, version 6.4.2",
+      "url": "https://doc.qt.io/qt-6.11/qtpositioning-attribution-clipper.html",
+      "sha256": "a8e146ca139d50209ac3a4cd2200f67de3db073fb9190739aada6d86f211b40e"
+    },
+    {
+      "title": "Poly2Tri Polygon Triangulation Library, version commit a922022da4c0d3a55b1d6b6d634219caea653053",
+      "url": "https://doc.qt.io/qt-6.11/qtpositioning-attribution-poly2tri.html",
+      "sha256": "65641fe392d07d7bfe9b6e24aba2196cc20adf68881b91f77148ec2bdbf4ef45"
+    },
+    {
+      "title": "JavaScriptCore Macro Assembler",
+      "url": "https://doc.qt.io/qt-6.11/qtqml-attribution-masm.html",
+      "sha256": "4e0d97df211e8632b18ed717ff9a69cd37ea2dc0f929d3366fb76704d1632a58"
+    },
+    {
+      "title": "Yoga, version 2.0.1",
+      "url": "https://doc.qt.io/qt-6.11/qtquick-attribution-yoga.html",
+      "sha256": "112b495aefab8859f9745eff7e29e47b3ca438ef498fc4925466511a65af18c1"
+    },
+    {
+      "title": "Open Asset Import Library, version 6.0.5",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-assimp.html",
+      "sha256": "3afcaeb3c8b96793311b01ac7177fda40fb87175f9b8434c483dde5e4ff91bf5"
+    },
+    {
+      "title": "Blue Noise Texture",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-blue-noise-texture.html",
+      "sha256": "507309ddecbfba1bd1428b5409fc2132877acb0a0b0afb289db34a9b826b6daf"
+    },
+    {
+      "title": "closestPointOnTriangle",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-closest-point-on-triangle.html",
+      "sha256": "aa1519f596b32676873f5b37bf407bb78c8e64b6de84fb698674ba98627859af"
+    },
+    {
+      "title": "Intel Embree, version 3.13.3",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-embree.html",
+      "sha256": "dd3d3b2bb2b921fbed2188aad9758c5c25a7ed0c85b5eacff418b4fe1d7b6bea"
+    },
+    {
+      "title": "Godot Engine: Fog",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-fog.html",
+      "sha256": "66abb67704d5adc76406e76b4b16f743804dff59c225dd527867e6d054ed1cc8"
+    },
+    {
+      "title": "Cornell",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-grid.html",
+      "sha256": "5daad69c79ac2876e26c84bbca3ab697a5f77bb1d4980263792a5fa3ddfd5c8d"
+    },
+    {
+      "title": "Java Native Interface for C++, version 1.0.0",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-jnipp.html",
+      "sha256": "3566930fa3692badbc7a356510314865c512af18d67ef6e3a2f4aec02b7fa678"
+    },
+    {
+      "title": "JsonCpp, version 1.9.6",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-jsoncpp.html",
+      "sha256": "453fcee280ea87dfe153066aaed2ddb30ede59214d72bc61a5563acc1f6dac8b"
+    },
+    {
+      "title": "meshoptimizer, version 1.0",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-meshoptimizer.html",
+      "sha256": "9bcd6a5f94a6d06ab80a5c7344e3e265c63f2874c8787041117ad7c775253b51"
+    },
+    {
+      "title": "OpenXR SDK, version 1.1.54",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-openxr.html",
+      "sha256": "70e524c06085dab36e6f8082ae292520b8cf8183385932bbb9f5dd32d5ea96a8"
+    },
+    {
+      "title": "Godot Engine: ProceduralSky",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-proceduralsky.html",
+      "sha256": "e1d0a84ce6ec3bab318e2aff889b0b9be245f6546024e10348a5eec50cb785fc"
+    },
+    {
+      "title": "Bake",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-svgrepo-baked.html",
+      "sha256": "05100a4945c153dd45602eb5ca59b098c0d95a72f6f982e72375d503e7399d86"
+    },
+    {
+      "title": "Camera Viewfinder",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-svgrepo-camera-viewfinder.html",
+      "sha256": "38972c06567d86dc25b57a0702e8579a6e3111f4667d5c78c08d594ffddde6f2"
+    },
+    {
+      "title": "Colosseum",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-svgrepo-colosseum.html",
+      "sha256": "664c40f4cb8460844bbdefacc2ba46d9b508b95024bfaeaf12a47c1361fe8300"
+    },
+    {
+      "title": "House Simple Bold",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-svgrepo-house-simple-bold.html",
+      "sha256": "dcfc363f9fd136100c5f92b7cb7f6c5e1a5b77c33d30f9aa327356f8679b6ea6"
+    },
+    {
+      "title": "Night Light Disabled",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-svgrepo-night-light-disabled.html",
+      "sha256": "3fe8ae20bbc3c1eca27312ac790ec95c671ace3852bbfd5f383e2c194ca6d60e"
+    },
+    {
+      "title": "Right Arrow Backup 2 SVG Vector",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-svgrepo-right-arrow.html",
+      "sha256": "cddfb3e4887428a9212b7bd38109bb7f8cdb4d9116b5d4e08fd39e7ee0c3764a"
+    },
+    {
+      "title": "Screen Shared",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-svgrepo-screen-shared.html",
+      "sha256": "c4a90c5599a79cc373c37cbda704fd1cdd8608fa7d5c1a2d35395c950b648315"
+    },
+    {
+      "title": "Tiny OpenEXR, version 1.0.13",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-tinyexr.html",
+      "sha256": "89eb1d4e98aa2990664acec42f22007718dce264404b7aa2dbde71849eca3108"
+    },
+    {
+      "title": "xatlas, version 16ace528acd2cf1f16a7c0dde99c42c486488dbe",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3d-attribution-xatlas.html",
+      "sha256": "b078e9b3da288925899eb5e9242959ee8a3e226976e47eb3a0e801bf8718c197"
+    },
+    {
+      "title": "NVIDIA PhysX SDK, version PhysX_4.1.2.29882248",
+      "url": "https://doc.qt.io/qt-6.11/qtquick3dphysics-attribution-physx.html",
+      "sha256": "d4030db798133a377dec8c4d38c374e82925659d56d5a0067f9b2855e0f139a9"
+    },
+    {
+      "title": "Shadow values from Angular Material",
+      "url": "https://doc.qt.io/qt-6.11/qtquickcontrols-attribution-shadow-angular-material.html",
+      "sha256": "b9f0525df3fe10d2ce3326030e5acc481b38b35c311755d2f4871244020dde85"
+    },
+    {
+      "title": "Android getRotationMatrix and getOrientation",
+      "url": "https://doc.qt.io/qt-6.11/qtsensors-attribution-android-compass.html",
+      "sha256": "610f704a75db89c61c771658c09948013948838534fe7dbfe4affee8dc87be2f"
+    },
+    {
+      "title": "glslang, version 16.1.0",
+      "url": "https://doc.qt.io/qt-6.11/qtshadertools-attribution-glslang.html",
+      "sha256": "5f9727984a78fecc458a1ab694fade3db417e09bf5e2cd8d2e07bc2754369312"
+    },
+    {
+      "title": "SPIRV-Cross, version 998146d76fc5cbb2726f44c55e25fa28a573a782",
+      "url": "https://doc.qt.io/qt-6.11/qtshadertools-attribution-spirvcross.html",
+      "sha256": "99f06aad70526d86dd9045f477806c199ac638d14c4243995b7fe5205a461cb0"
+    },
+    {
+      "title": "Eigen, version 5.0.1",
+      "url": "https://doc.qt.io/qt-6.11/qtspatialaudio-attribution-eigen.html",
+      "sha256": "e78c39005cc9d03260f54c80b159571098c31d6e73813aaa6a17da68c57bc738"
+    },
+    {
+      "title": "pffft, version 02fe7715a5bf8bfd914681c53429600f94e0f536",
+      "url": "https://doc.qt.io/qt-6.11/qtspatialaudio-attribution-pffft.html",
+      "sha256": "d545720330b1901683eebb522d56894c77d749bdd9a0db14331d86c5506eb2c1"
+    },
+    {
+      "title": "Resonance Audio, version e225aedb5ec76ca6a0fe7079c0b84dbcbb490553",
+      "url": "https://doc.qt.io/qt-6.11/qtspatialaudio-attribution-resonance-audio.html",
+      "sha256": "7d78e57754a41b7b6045b9a9ab4b6d2a828c42b5860ffe04974d47a2dfaeb946"
+    },
+    {
+      "title": "SQLite, version 3.54.0",
+      "url": "https://doc.qt.io/qt-6.11/qtsql-attribution-sqlite.html",
+      "sha256": "95287dd6dc072b102e06918cd069d47f2565a21630227d49f4fbe77db653633f"
+    },
+    {
+      "title": "XSVG",
+      "url": "https://doc.qt.io/qt-6.11/qtsvg-attribution-xsvg.html",
+      "sha256": "50cdc4f1a1a5472b4b1a0bd564cbee6ff2a5d7c7b397291de6da69b81886b732"
+    },
+    {
+      "title": "Catch2, version 2.13.10",
+      "url": "https://doc.qt.io/qt-6.11/qttestlib-attribution-catch2.html",
+      "sha256": "acbbe5d8ecabf7c053ea737ce4c22a289fbc1d3e021ec41253029fde856510e2"
+    },
+    {
+      "title": "Cycle, version 3.3.11",
+      "url": "https://doc.qt.io/qt-6.11/qttestlib-attribution-cycle.html",
+      "sha256": "e2363279751b15fa018801de2e92e1befc426f04b01994466f145eb625609d8d"
+    },
+    {
+      "title": "Linux Performance Events, version 6.13",
+      "url": "https://doc.qt.io/qt-6.11/qttestlib-attribution-linuxperf.html",
+      "sha256": "86d88c144d9239c9b151f9dd124958be1c8228ce1cdfb1690cc2eb90240df086"
+    },
+    {
+      "title": "Valgrind, version 3.25.1",
+      "url": "https://doc.qt.io/qt-6.11/qttestlib-attribution-valgrind.html",
+      "sha256": "2ebedd1f9e2f524d27c6186832e3e4dd095d88e4d9cd02b3be8517b2c72cb7e8"
+    },
+    {
+      "title": "OpenWnn",
+      "url": "https://doc.qt.io/qt-6.11/qtvirtualkeyboard-attribution-openwnn.html",
+      "sha256": "133240a644db0d2e3708e329c0e9f86d8db8b95b1a840970271aa7b0be61717e"
+    },
+    {
+      "title": "PinyinIME",
+      "url": "https://doc.qt.io/qt-6.11/qtvirtualkeyboard-attribution-pinyin.html",
+      "sha256": "30255428c3f0567b8f99bd26d6d8f64877ac9d60dbf9036b68ef805351785c92"
+    },
+    {
+      "title": "Traditional Chinese IME (tcime)",
+      "url": "https://doc.qt.io/qt-6.11/qtvirtualkeyboard-attribution-tcime.html",
+      "sha256": "d8037ed73251a69061c974381290e400ccfc32870bd27c9b9a52abc1a3d5f6fc"
+    },
+    {
+      "title": "Wayland KDE DBus Menu Protocol, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-appmenu.html",
+      "sha256": "1237c0550908c1481b3ae4d918cd33a12073443a6e80e0b5a3fb48ee66833f3a"
+    },
+    {
+      "title": "Wayland Fractional Scale Protocol, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-fractional-scale-v1.html",
+      "sha256": "7028b7c3a68e5fbd2a5848f53b4cb10e08a83a6017ab94c0611790aa9954d256"
+    },
+    {
+      "title": "Presentation Time Protocol, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-presentation-time-xml.html",
+      "sha256": "03d05053ec66f006bff305c92fd269dd8a9739bf9bee0032cecc5070c3df6d21"
+    },
+    {
+      "title": "Wayland Color Management Protocol, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-color-management-protocol.html",
+      "sha256": "a86469b7436b80119fa684cbd4b988754b335da1007371f4ac56352ea8da8b13"
+    },
+    {
+      "title": "Wayland EGLStream Controller Protocol, version 1.1.1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-eglstream-controller.html",
+      "sha256": "446d1201e158175e43e656baa0fbe5ac6555ea94bed71d7f270bc294a2c548df"
+    },
+    {
+      "title": "Wayland Fullscreen Shell Protocol, version unstable v1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-fullscreen-protocol.html",
+      "sha256": "7cf45fd807f770ba571a935001f87b3bbcff375a72b29bd60b192fa5ff665cda"
+    },
+    {
+      "title": "Wayland IVI Extension Protocol, version 1.9.1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-ivi-extension-protocol.html",
+      "sha256": "8df6d9a142c43851411a18bf5ecd1226757f0c59c83c939df8eefc9606009873"
+    },
+    {
+      "title": "Wayland Linux Dmabuf Unstable V1 Protocol, version unstable v1, version 3",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-linux-dmabuf-unstable-v1.html",
+      "sha256": "627151069a9e724d627e597667c2d1ed79311f36de3c39515bf95240d6c8f4ec"
+    },
+    {
+      "title": "Wayland Pointer Gestures Protocol, version unstable v1, version 2",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-pointer-gestures-protocol.html",
+      "sha256": "b889272345eb7bc2375fc475ee2bce37be46382d3a36af7644ce8ead2013aa76"
+    },
+    {
+      "title": "Wayland Pointer Warp Protocol, version version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-pointer-warp-protocol.html",
+      "sha256": "30dc86a8ac0dbc8b53f1340e01ffb2ef2ffc0d6468a5865b97a00b16443a7815"
+    },
+    {
+      "title": "Wayland Primary Selection Protocol, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-primary-selection-protocol.html",
+      "sha256": "4f416cb44900817548304bdc124cffb9f4fe71539d156f9a1f35eedb7eec8ec1"
+    },
+    {
+      "title": "Wayland Protocol, version 1.24.0",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-protocol.html",
+      "sha256": "ef7db314d9fa158558d05ae85b33636b3d7c1c04833fe052a42b9bb98b2ed2c2"
+    },
+    {
+      "title": "Wayland Scaler Protocol, version 2",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-scaler-protocol.html",
+      "sha256": "af6b6512544cbd4b62cc1d8e0ffe6791084699a71da3ff1b1240ef86ad72dee5"
+    },
+    {
+      "title": "Wayland Session Management Protocol, version experimental V1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-session-management-protocol.html",
+      "sha256": "4ea7e1d0c699aabde7413cf839d8b7822b39a17cb96ddbf5bc1f8019048982f1"
+    },
+    {
+      "title": "Wayland Tablet Protocol, version unstable v2, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-tablet-protocol.html",
+      "sha256": "b15ccd508255879060211a1baaef7a6b2bed125664708949a45811cb2daa3e57"
+    },
+    {
+      "title": "Wayland Text Input Protocol v1, version unstable v1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-text-input-unstable-v1.html",
+      "sha256": "8ae543d9b14e96b587605105a1fa8df1f4e0578557c6107fb6cbaedd563ae1ba"
+    },
+    {
+      "title": "Wayland Text Input Protocol v2, version unstable v2",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-text-input-unstable-v2.html",
+      "sha256": "4005c507214a3c7b6d80cb62347a4cd482ec00cb96b048372cfc2829ba66c563"
+    },
+    {
+      "title": "Wayland Text Input Protocol, version unstable v3",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-text-input-unstable-v3.html",
+      "sha256": "33eaf6b667f053d07503e02a97543e13f2f43cfd57f04b1296cd5df83cbdd82c"
+    },
+    {
+      "title": "Wayland Viewporter Protocol, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-viewporter-protocol.html",
+      "sha256": "cfba87c7aed5729645bb60db59021f77f676a6f3682beb843aae89863f55aa31"
+    },
+    {
+      "title": "Wayland xdg-activation Protocol, version unstable v1, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-xdg-activation.html",
+      "sha256": "75380f771aa98f3e8c52b7790863e4390665893315f15dc2342b08eda9137b83"
+    },
+    {
+      "title": "Wayland xdg-decoration Protocol, version unstable v1, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-xdg-decoration-protocol.html",
+      "sha256": "2419bd50181aebe236c9a9bac1a173b8fbc10ac392e6b1f0fcf01de9bbdc6b70"
+    },
+    {
+      "title": "Wayland XDG Output Protocol, version unstable v1, version 3",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-xdg-output-protocol.html",
+      "sha256": "6b94f135205fca5bc108b33f1cd05f6afcdeae4f4303901fd651729f496f7400"
+    },
+    {
+      "title": "Wayland XDG Shell Protocol, version 1.18",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-xdg-shell-protocol.html",
+      "sha256": "216e2ae98faf1f4007918c7637cde16dc3e1a4b6aea347460222e9703b528f3a"
+    },
+    {
+      "title": "Wayland XDG System Bell Protocol, version 1.18",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-xdg-system-bell-protocol.html",
+      "sha256": "d813fc04a9e2ac97c489bc524286bb5b881c3fdf59ae5d82cea805f73bdf01d2"
+    },
+    {
+      "title": "Wayland xdg-toplevel-icon Protocol, version version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wayland-xdg-toplevel-icon-protocol.html",
+      "sha256": "e57d69a22b12aa439511c924025af9ca72f9d9ddab3a6a7d922329a8749db210"
+    },
+    {
+      "title": "Wlr Data Control Unstable V1 Protocol, version 2",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-wlr-data-control-unstable-v1-protocol.html",
+      "sha256": "f89b8196308eda1de89831e66a33e505b5e819b7a873f4c50b6999a3b5a12c96"
+    },
+    {
+      "title": "Wayland Dialog Protocol, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-xdg-dialog-v1.html",
+      "sha256": "7810d2136f95dd737f3395a4484fa85198b26b0b1b026c674896aa4086433949"
+    },
+    {
+      "title": "Wayland XDG Foreign Protocol, version 1",
+      "url": "https://doc.qt.io/qt-6.11/qtwaylandcompositor-attribution-xdg-foreign-unstable-v2.html",
+      "sha256": "f4a77e013e57885a7d9881336de5295cac62549edebd7b28ae423557e4809c1c"
+    },
+    {
+      "title": "Abseil",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-abseil.html",
+      "sha256": "4a2e92723a7962de12ed7505e51c39d141328b0c67d93978e4be32a59fa997ba"
+    },
+    {
+      "title": "Acorn, a tiny, fast JavaScript parser written in JavaScript.",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-acorn-a-tiny-fast-javascript-parser-written-in-javascript.html",
+      "sha256": "f4d4b254855a2cc8b99b2524ef8c4e2cb41d4f3da950f4e94c77eef6e9322bdc"
+    },
+    {
+      "title": "Alliance for Open Media Video Codec",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-alliance-for-open-media-video-codec.html",
+      "sha256": "f86b9fbbd0e08148b319845944895ccf7a6c13bdbb0746e9ed14a991dd8549b8"
+    },
+    {
+      "title": "Almost Native Graphics Layer Engine",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-almost-native-graphics-layer-engine.html",
+      "sha256": "0eb87c7bbb9309b8216d920805b20748390a51587bd8a9593dfbf6ba56fa513b"
+    },
+    {
+      "title": "Android Explicit Synchronization",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-android-explicit-synchronization.html",
+      "sha256": "cee75410c0fd1c21df5712be430af286072bb429b10cc133a10c64a3142e7cbe"
+    },
+    {
+      "title": "BoringSSL",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-boringssl.html",
+      "sha256": "b708cdabef50daec50de9bfbdd8a9544a01e5c97edac5e8209a18dd3772548c8"
+    },
+    {
+      "title": "Brotli",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-brotli.html",
+      "sha256": "c9f9d3f6d5399e991054789215401c599804124e5aa70dd71ce9436f5203925e"
+    },
+    {
+      "title": "C++ Signal/Slot Library",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-c-signal-slot-library.html",
+      "sha256": "8b035826fbebf7e8c5cd01d4eecc41251a6d8b56048299a636354f7f69877be8"
+    },
+    {
+      "title": "Chromium License",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-chromium-global.html",
+      "sha256": "8c89adf495b5cab85798fde70992fcb047215bad084d732d0baad18b14942c85"
+    },
+    {
+      "title": "CityHash",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-cityhash.html",
+      "sha256": "f8d990f448f48c765e5c95b0883e456fb35bf8f83a1287cc05100054cf93c8a9"
+    },
+    {
+      "title": "CodeMirror 5",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-codemirror-5.html",
+      "sha256": "aeaea9ab194fbefc6a51aa855aa2f3a6607d5efc38320b1d12aa2ae10cd4a616"
+    },
+    {
+      "title": "CodeMirror 6",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-codemirror-6.html",
+      "sha256": "c9c60120f08b3b7dec475ebe536000fef86de5c5749810d0c47747693e307ac9"
+    },
+    {
+      "title": "Compact Encoding Detection",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-compact-encoding-detection.html",
+      "sha256": "493ef76f29cc753d255bce6d6ee4a00f59340bd7aa725fad63211f182c291e72"
+    },
+    {
+      "title": "Compact Language Detector v3",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-compact-language-detector-v3.html",
+      "sha256": "69c3fe6c95e99d5a039ad8fb151d919a7494195d860048e5fb852f845c9f4b4e"
+    },
+    {
+      "title": "cpuinfo",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-cpuinfo.html",
+      "sha256": "74f9f9b2f668bee02b130dae241052094d8b1b57ffac7d0d067ad98363722ff2"
+    },
+    {
+      "title": "Crashpad",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-crashpad.html",
+      "sha256": "2e1129f56d748bad6137b6914bca5bf01ecdf446b51a9e74f6a8a4305229ae1c"
+    },
+    {
+      "title": "CRC32C",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-crc32c.html",
+      "sha256": "753bba3dfbedc3df5936745a330e269e6491c6de2c5699ae981df4d4e9c7504c"
+    },
+    {
+      "title": "CSP Evaluator Core Library, a tool that allows developers to check if a Content Security Policy (CSP) serves as mitigation against XSS attacks",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-csp-evaluator-core-library-a-tool-that-allows-developers-to-check-if-a-content-security-policy-csp-serves-as-mitigation-against-xss-attacks.html",
+      "sha256": "204e9c2336e8067a97421a3211bfa00d5b7740d3cbece31cd561cfe20aba5b8a"
+    },
+    {
+      "title": "d3",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-d3.html",
+      "sha256": "6e71993056dff784eeb00c3bf8c93f10d9b6308c97630f7f5a87ee61df51544f"
+    },
+    {
+      "title": "dav1d is an AV1 decoder :)",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-dav1d-is-an-av1-decoder.html",
+      "sha256": "ca37323c90941bb834009cbfa403930e51ecfe2cb9866988114e16a9d42be852"
+    },
+    {
+      "title": "Dawn",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-dawn.html",
+      "sha256": "0b1148371853e45e4344e8592f60e74305b34822c57d4513927059e2fdbeb447"
+    },
+    {
+      "title": "Devtools-Frontend",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-devtools-frontend.html",
+      "sha256": "0c516dc61e43460501c7eef91644e92a3a93fdb4139e7966ed2da7e32a5d779f"
+    },
+    {
+      "title": "dragonbox",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-dragonbox.html",
+      "sha256": "6ed104cb5b4d26bcaf1bb54c2631d3d1667d19a84b4c8b03143c4fc75dcc1b5a"
+    },
+    {
+      "title": "Emoji Segmenter",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-emoji-segmenter.html",
+      "sha256": "2459d3e7874ede09744015dc949b3b457e0a41889b6742454b34987fcb476f28"
+    },
+    {
+      "title": "Expat XML Parser",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-expat-xml-parser.html",
+      "sha256": "1b72b3302dfc483d2adf67a4659f14f4408caf7145675c1bf5f0404b191c42d4"
+    },
+    {
+      "title": "fast_float",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-fast-float.html",
+      "sha256": "a5c8aa60b487649bf640fa5b93b3c74d0c23e314d01d5454783a4b7bd19df2ca"
+    },
+    {
+      "title": "ffmpeg",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-ffmpeg.html",
+      "sha256": "acdb5f0a5079d6de03fe4f8a917969cc96af04a84b917dd98c11a438689ecf63"
+    },
+    {
+      "title": "fft",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-fft.html",
+      "sha256": "fba397abd5501f476415528a4553e518bb25cd65e38883d55dd09c4d1f5a7df0"
+    },
+    {
+      "title": "Fiat-Crypto: Synthesizing Correct-by-Construction Code for Cryptographic Primitives",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-fiat-crypto-synthesizing-correct-by-construction-code-for-cryptographic-primitives.html",
+      "sha256": "e21d35fb5310e53f40eb4d37a1a43fd6e86ef3c415c0878d8641191798f42157"
+    },
+    {
+      "title": "flac",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-flac.html",
+      "sha256": "ce5bf413b641dbce097d99ee6677576b32eaf0add221888a468e3d1be424e00d"
+    },
+    {
+      "title": "FlatBuffers",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-flatbuffers.html",
+      "sha256": "c1df655d3964e9819e0ea0d186c00ec52f1fa67d62520a6bd223ebc19a25334f"
+    },
+    {
+      "title": "fontconfig",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-fontconfig.html",
+      "sha256": "8809e82a20c6616170c272a239a4b4119af1727980be0b0f997292403779cc4a"
+    },
+    {
+      "title": "FP16",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-fp16.html",
+      "sha256": "1ee0278b2617052e084b1064f0d7e2c8b9e9de03b5fbb2e3deacc0ec2136fa6a"
+    },
+    {
+      "title": "General Purpose FFT (Fast Fourier/Cosine/Sine Transform) Package",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-general-purpose-fft-fast-fourier-cosine-sine-transform-package.html",
+      "sha256": "aab5834542bec1c4c726ac523ee429a6275560e341e22d03924cd64bde1f766f"
+    },
+    {
+      "title": "Google Double Conversion",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-google-double-conversion.html",
+      "sha256": "9221d7c3052594e170d43faf895381d62b455f608bbeeb3ae924a0468e23cd62"
+    },
+    {
+      "title": "google-glog's symbolization library",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-google-glog-x27-s-symbolization-library.html",
+      "sha256": "bac6c094100229eb058fd77883a6c118abcc7aace6c1f9c16137f144e084d770"
+    },
+    {
+      "title": "harfbuzz",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-harfbuzz.html",
+      "sha256": "13269974236d860cf4ae864180a2cb66985d70de64743257a032076f95ac3c52"
+    },
+    {
+      "title": "Headers for the Windows 10 WebAuthn API (webauthn.dll)",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-headers-for-the-windows-10-webauthn-api-webauthn-dll.html",
+      "sha256": "d66bdc17634bb7e933b30d443b1551765a96e6d7a683898896d934fd51945e41"
+    },
+    {
+      "title": "Highway: C++ library for SIMD",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-highway-c-library-for-simd.html",
+      "sha256": "53345d99612a81434cff01760ed4e9fb481603c35e25bdcd9b2d2a33b6b03ca9"
+    },
+    {
+      "title": "hunspell",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-hunspell.html",
+      "sha256": "85c68ecfd4749d716a8c2ee8c3b6992e09f3462e5f520e3d0582d3031ca679f4"
+    },
+    {
+      "title": "icu",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-icu.html",
+      "sha256": "07835d206cb85bb6f2be57191718241eefa14983813992a10b8cd9ea5f0193a3"
+    },
+    {
+      "title": "Implementation of WebDriver BiDi standard",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-implementation-of-webdriver-bidi-standard.html",
+      "sha256": "0068b0b7ab9879b847e346ed4284f402461c4d962db9c0602d4e1a904924b11c"
+    },
+    {
+      "title": "In line A-law and u-law conversion routines",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-in-line-a-law-and-u-law-conversion-routines.html",
+      "sha256": "ec58793456d212e867fa4528b663081830f94e01ec0ea13355112eb106d8f063"
+    },
+    {
+      "title": "Ink Stroke Modeler",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-ink-stroke-modeler.html",
+      "sha256": "d2f2cd358cd527b6e0d976f733484da7448a3507b40a093fdfbf024d1b78578c"
+    },
+    {
+      "title": "Ink",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-ink.html",
+      "sha256": "7e73efb14bb8ad93d3f4acecdd7104d7c920436dfcd9aa0121c4724ccc989253"
+    },
+    {
+      "title": "inspector protocol",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-inspector-protocol.html",
+      "sha256": "ea7d44dff2456036dbb36b0e8f99fdeb80494b696e01d3f67e7f55a38d723879"
+    },
+    {
+      "title": "intl-messageformat",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-intl-messageformat.html",
+      "sha256": "ad7a518172c8812680dc68553c76018bd00a3e1c62d8a3ce65bc84355f2f5fc0"
+    },
+    {
+      "title": "ipcz",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-ipcz.html",
+      "sha256": "a560fa36558ac60e7db33b4e1e3482e5a37190bfb657e1a2f6f14cfcdfe4465c"
+    },
+    {
+      "title": "json5",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-json5.html",
+      "sha256": "1a7095ef681c25852fb85939807165e7f3c219337b4bda63523250ee8bfb654d"
+    },
+    {
+      "title": "jsoncpp",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-jsoncpp.html",
+      "sha256": "c823842fed659c99178fd03046dea24f4961206165367aa98bd5cb404935b13d"
+    },
+    {
+      "title": "legacy-javascript",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-legacy-javascript.html",
+      "sha256": "5ec48aaeee21353ae697d0ffd08aaed5110c6411970d4e4a3ac8a56ff2594ed5"
+    },
+    {
+      "title": "LevelDB: A Fast Persistent Key-Value Store",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-leveldb-a-fast-persistent-key-value-store.html",
+      "sha256": "6d348f4c355ec11227bf73265601228c649378036aace2af98e861f285987a7e"
+    },
+    {
+      "title": "libaddressinput",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libaddressinput.html",
+      "sha256": "03d0b5459db266f60a684e45337c4a6894392fb9632ced56f76931f2fd48c6d0"
+    },
+    {
+      "title": "libavif - Library for encoding and decoding .avif files",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libavif-library-for-encoding-and-decoding-avif-files.html",
+      "sha256": "3ac55fdb4b2864c0f7b52360f3b632371aa3003bb969db63b152f17c2be77b5e"
+    },
+    {
+      "title": "libgav1",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libgav1.html",
+      "sha256": "fa2a2d963dae286b9bd0f1622af9f6d996d815f1e24819474cf12485ead460bf"
+    },
+    {
+      "title": "libpng",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libpng.html",
+      "sha256": "a2f4a8af581e85f8666de9969cab9ee2e92d6346d16682e75f62f1392de9f1da"
+    },
+    {
+      "title": "libsrtp",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libsrtp.html",
+      "sha256": "db06e9c97dbf059edd47c70d87b2e9991a9b8bb3d4cdebb02f7da842b87ee959"
+    },
+    {
+      "title": "Libtess2",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libtess2.html",
+      "sha256": "4e940af04a7cca723f43ba1933d4a64db8cd8a803a611d3e60c012b82c431db2"
+    },
+    {
+      "title": "libvpx",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libvpx.html",
+      "sha256": "89f44a6bfea6629d50512b0733ad977a61de128fd1f497628247cd5aef95e45e"
+    },
+    {
+      "title": "libxml",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libxml.html",
+      "sha256": "21b98556d338c4b01faba74853e193504cdeb2c0ce4aa5e1e59e72d596e8ce7d"
+    },
+    {
+      "title": "libxslt",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libxslt.html",
+      "sha256": "8e28a8f1c75fdfa395904fe20e7472f613480ff5ca8313f74ad67cdaf5c64a7f"
+    },
+    {
+      "title": "libyuv",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-libyuv.html",
+      "sha256": "381f9f4d472b3e7020932d7b50bc8bf2d18dd3e8468f708499d3d1ab83d7ce42"
+    },
+    {
+      "title": "Lighthouse i18n.js",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-lighthouse-i18n-js.html",
+      "sha256": "f5f575c03a474c9ca4c0bf26ee4161a4aa31623edf78f5870c919b28b2825f86"
+    },
+    {
+      "title": "Lighthouse",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-lighthouse.html",
+      "sha256": "1c6aae3637305cc4279df4001d2da01baf239806ba41a8b1e1ff1f6d6a7ef3b6"
+    },
+    {
+      "title": "Lit",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-lit.html",
+      "sha256": "e60e67bc323cea9df8b3743f33ec4f6a7328b034975c9559cb6646f4947816cf"
+    },
+    {
+      "title": "LZMA SDK",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-lzma-sdk.html",
+      "sha256": "98462e0c465147734ad733b4035b99583102ed4875f529f5a6ddcd3f01f1d935"
+    },
+    {
+      "title": "Marked",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-marked.html",
+      "sha256": "d7d628ab1156b970dcc87195a44a9b2aaff8a717e57aa6247c6f6935be56315e"
+    },
+    {
+      "title": "Material color utilities",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-material-color-utilities.html",
+      "sha256": "5a134ae6e037a63a06676a7aba837923e6eac0a205a09482368d4ae6a36dcaa5"
+    },
+    {
+      "title": "Metrics Protos",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-metrics-protos.html",
+      "sha256": "2ae52dc54cbe65b91f1b166652d01240aec8ae79b1f1e00f48c271fbae6b49cd"
+    },
+    {
+      "title": "minigbm",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-minigbm.html",
+      "sha256": "6c9868b720333f3a9d3eb3fa3a75a596592fa789b83ada5c2d0cc6d3af86308f"
+    },
+    {
+      "title": "mitt",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-mitt.html",
+      "sha256": "1fda112233c00216c42980600b28f314da3343f6eab68d7f781b21d48ac6a7af"
+    },
+    {
+      "title": "modp base64 decoder",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-modp-base64-decoder.html",
+      "sha256": "e09b03486421cef0b4e25d32b6ad9b03ee3b6aefe204ed80361e53fa664593c5"
+    },
+    {
+      "title": "NVidia Control X Extension Library",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-nvidia-control-x-extension-library.html",
+      "sha256": "b3edcdbdd51a0e76425e99dd515b35bb824c7d52bd7ff225391c38539a9d1484"
+    },
+    {
+      "title": "One Euro Filter",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-one-euro-filter.html",
+      "sha256": "93dd630e3de0ce029c7b54f5b99d3134f3aac35609bb59a4d150444eb038d3f3"
+    },
+    {
+      "title": "opus",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-opus.html",
+      "sha256": "0309c723a699bc7f01bc776389f2dd32d21f32f856f2abfddccd111763c44e7f"
+    },
+    {
+      "title": "OTS (OpenType Sanitizer)",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-ots-opentype-sanitizer.html",
+      "sha256": "8015b3e93b4ce42ac113c4899a972c6cb8cd5268d5d75c206d02ac5c4d432c74"
+    },
+    {
+      "title": "Paul Hsieh's SuperFastHash",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-paul-hsieh-x27-s-superfasthash.html",
+      "sha256": "7b6e0139593dcd38772c10d35b01f1ea41dec79a3a0e0eccc15e313ab717bb4e"
+    },
+    {
+      "title": "PDFium",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-pdfium.html",
+      "sha256": "f187cc0a96f7238db4399a1930b57c0c98c1525417d74f7753feff7d797c1a3f"
+    },
+    {
+      "title": "Perfetto",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-perfetto.html",
+      "sha256": "aaca51ea06695fd6145d6fb37b3062f31ab8093471bf62bb20775e635a1ebf9c"
+    },
+    {
+      "title": "PFFFT: a pretty fast FFT.",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-pffft-a-pretty-fast-fft.html",
+      "sha256": "f1cae320b43e2f168f5ce20caeee1902f081a7cc78aabbb5e0eea7a7c1b95328"
+    },
+    {
+      "title": "Polymer",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-polymer.html",
+      "sha256": "30b52735c271bfcb877b9a002f63d0d3b0ae7643129567010564e1e00cdb3763"
+    },
+    {
+      "title": "Private Join and Compute subset",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-private-join-and-compute-subset.html",
+      "sha256": "8fa7dce2766a92682b9f3aa6c366a1b7e94d9a6a68d94e72c5a866a3a09100af"
+    },
+    {
+      "title": "Protocol Buffers (javascript)",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-protocol-buffers-javascript.html",
+      "sha256": "780522897c0e42269496ae7612a32df846efba7cdd99adc3484d3e3bf68ae220"
+    },
+    {
+      "title": "Protocol Buffers",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-protocol-buffers.html",
+      "sha256": "de66e3cf445cde6f44e2caa16da158cd1b814bc1649821fdd45ad6d1844c5e24"
+    },
+    {
+      "title": "Puppeteer Core",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-puppeteer-core.html",
+      "sha256": "619c2af3e0623d649cecf5c2b0f6eb2ccd7a18b8dcf5fe411d5bf609b458e2b9"
+    },
+    {
+      "title": "@puppeteer/replay",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-puppeteer-replay.html",
+      "sha256": "80c4476867c39d409131e7c2a3426c52bb0d302467a5b8b83afb4212b250af29"
+    },
+    {
+      "title": "QUICHE",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-quiche.html",
+      "sha256": "5812c1cc61f7f69d7d44c484c3be2b175b80d9afdf32080e58bf7d2e1ddd244a"
+    },
+    {
+      "title": "rapidhash",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-rapidhash.html",
+      "sha256": "a499a96d2a7d79174757f1d57757a27cde187be25636dda16a8f51c53da4b625"
+    },
+    {
+      "title": "re2 - an efficient, principled regular expression library",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-re2-an-efficient-principled-regular-expression-library.html",
+      "sha256": "6e8b4ff84e39b4bd424dd0b8090cc37855c7849fe32ca09b247fc0f74d1a69d5"
+    },
+    {
+      "title": "Recurrent neural network for audio noise reduction",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-recurrent-neural-network-for-audio-noise-reduction.html",
+      "sha256": "ab9b2394ee6a2ba439392479f40944eb58ad0633c20eeb00be99c43d97499213"
+    },
+    {
+      "title": "Search Engines resources",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-search-engines-resources.html",
+      "sha256": "a971f8530c123d4c11894cf49bcb8b849c5fd34700ccb83592a2b434d77095ef"
+    },
+    {
+      "title": "Selenium Atoms",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-selenium-atoms.html",
+      "sha256": "23243336b0d4f94543d4b4c4d23c7046ac7f6f7dc10ea2f5186c980e791722d1"
+    },
+    {
+      "title": "simdutf unicode transcoder",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-simdutf-unicode-transcoder.html",
+      "sha256": "121c6664835672aa869a662d412d150b8e9f9d9a27d9cb962026cd43d1cc610c"
+    },
+    {
+      "title": "Sizzle",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-sizzle.html",
+      "sha256": "a23fcab1f79febd0c84f654558a85268e5e3f4afd3442ddaf5fec2c74a578c8f"
+    },
+    {
+      "title": "Snappy: A fast compressor/decompressor",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-snappy-a-fast-compressor-decompressor.html",
+      "sha256": "13ff7d4d9ed649945b00e5cacbab89fb8c29a3aa47f9c02cb0057ada7349248d"
+    },
+    {
+      "title": "source-map-scopes-codec",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-source-map-scopes-codec.html",
+      "sha256": "bebf17cdcc911a8ef1dcaa3d92498160af85c59dc6689fc5440ad5d23cff18af"
+    },
+    {
+      "title": "Speech Dispatcher",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-speech-dispatcher.html",
+      "sha256": "36b03c0d52a7dc3ef53ff37d56462b48684094731421a6cacf0b2565febc8be9"
+    },
+    {
+      "title": "SPIR-V Headers",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-spir-v-headers.html",
+      "sha256": "36758accc5c96e9280ac7ea8f167c5be33bc6e4dc8fe17dcfa4575e4d557a3aa"
+    },
+    {
+      "title": "SPIR-V Tools",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-spir-v-tools.html",
+      "sha256": "ac1718ad896cf28263195b47229f70c90e5403e4c6925effed9710a4b4ac61b8"
+    },
+    {
+      "title": "spl sqrt floor",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-spl-sqrt-floor.html",
+      "sha256": "39b22bb496146c2eb88adf1c509a21404f7d0604901de7bfcdcb3a0bb5e805bf"
+    },
+    {
+      "title": "sqlite",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-sqlite.html",
+      "sha256": "a6f9b4b91b41540e0b6d2af3fa899cffbd1d1b8f55c076cc9d54515a7333534c"
+    },
+    {
+      "title": "The Chromium Project",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-the-chromium-project.html",
+      "sha256": "750987b16e91d5f021f9ca456a1206b9704edd7f24404d8e536f5d0b26afdf57"
+    },
+    {
+      "title": "The Diff Match and Patch libraries offer robust algorithms to perform the operations required for synchronizing plain text.",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-the-diff-match-and-patch-libraries-offer-robust-algorithms-to-perform-the-operations-required-for-synchronizing-plain-text.html",
+      "sha256": "460f0ea47e6a02ea394222afc887e55ace5987388ec81c1cbddb08e382b24852"
+    },
+    {
+      "title": "The ITU G.722 codec, encode and decode part.",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-the-itu-g-722-codec-encode-and-decode-part.html",
+      "sha256": "dabcd9e86d9064165f713d4c5ad742f8c777d389b4e29482a9c9ea8b5b538e83"
+    },
+    {
+      "title": "third-party-web",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-third-party-web.html",
+      "sha256": "2aaed8487b5ac136f1f6fa57d7f7308547f41dd7dc66c8817ffc4381eda4ca8b"
+    },
+    {
+      "title": "URI Template Parser",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-uri-template-parser.html",
+      "sha256": "df3a8a14f16cc083285829689d535c8a29efe9ea15b4f78c9233bfe5e26aba40"
+    },
+    {
+      "title": "URL Pattern Library",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-url-pattern-library.html",
+      "sha256": "3ba7c4e560dcd741f53e7d5b71059cc508251a310db2e85057f0900379457727"
+    },
+    {
+      "title": "V8 fork of fdlibm",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-v8-fork-of-fdlibm.html",
+      "sha256": "e031ddf2b16c04918793c6650fb95859bfeadfc266181054126060a8bf13157a"
+    },
+    {
+      "title": "Volk Meta loader for Vulkan API",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-volk-meta-loader-for-vulkan-api.html",
+      "sha256": "d140f3d871044d1f7f91d2cc4e38d45a0a347eb74bfddb967fb45a32e33a68d7"
+    },
+    {
+      "title": "@vscode/web-custom-data",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-vscode-web-custom-data.html",
+      "sha256": "02beb543dda402b4ce56d3d8061facada3427fe97de1fc441f8b9b10b3b9ddde"
+    },
+    {
+      "title": "Vulkan API headers",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-vulkan-api-headers.html",
+      "sha256": "fd98cfff4251f91491a26da0570eb6366ae3ee3b48f51e1dea0963c2c56040c9"
+    },
+    {
+      "title": "Vulkan Loader Components",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-vulkan-loader-components.html",
+      "sha256": "de49e5dd18efc6015a24bffb980ecaa330f9521caaf8a029c4ddd12eced3a046"
+    },
+    {
+      "title": "VulkanMemoryAllocator",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-vulkanmemoryallocator.html",
+      "sha256": "1aa936e81cbb80dbbe23e4ec4ff48a090ea035343509bf5a001c0cc5aedad50a"
+    },
+    {
+      "title": "Wasmparser",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-wasmparser.html",
+      "sha256": "7745f0d02720bf971f7b609c5af0dabdeda0597e4097512b63f7f605ea12af43"
+    },
+    {
+      "title": "Web Vitals",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-web-vitals.html",
+      "sha256": "d168d013b8b2388b0ba26a193e4ca5acaad08f7d98e02e294c9d9df674b6613c"
+    },
+    {
+      "title": "WebKit",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-webkit.html",
+      "sha256": "96157ea9f3f7b6fec22320924e865b95b6e4f2c8e5e5d5c09e6203796a9ff77d"
+    },
+    {
+      "title": "WebM container parser and writer.",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-webm-container-parser-and-writer.html",
+      "sha256": "c55a598ae2c2253ee9c354f55827d3085e17005ccba3e5d8768848ccacf77ebf"
+    },
+    {
+      "title": "WebP image encoder/decoder",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-webp-image-encoder-decoder.html",
+      "sha256": "8ac4b0ed1c2efd3dac1a32acd4baf1bc30e7594954b89d4a88b2f8ebc4444534"
+    },
+    {
+      "title": "WebRTC",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-webrtc.html",
+      "sha256": "b981e76c13cff6b48337be6f1d3678aae5767e31a7643d0aa3a8897580ab52a5"
+    },
+    {
+      "title": "Wicked Good XPath",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-wicked-good-xpath.html",
+      "sha256": "ab2785251e919f2081a9f506f47085238df15d7dc23678df4787f7b294976fac"
+    },
+    {
+      "title": "woff2",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-woff2.html",
+      "sha256": "f4b7d0727944ce4e5a4176a62f791a1069db04f838c66395505fe47cc57ddb7a"
+    },
+    {
+      "title": "Wuffs (Wrangling Untrusted File Formats Safely)",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-wuffs-wrangling-untrusted-file-formats-safely.html",
+      "sha256": "3c859560d819ae7feb28aff5ebfd4ceef7a4c505fd31cc4e01707f5cfc739db7"
+    },
+    {
+      "title": "xdg-user-dirs",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-xdg-user-dirs.html",
+      "sha256": "8e1dddf97e248878681fc5aa1276e8f38cffb83b4daf0e83d99d683984b622f2"
+    },
+    {
+      "title": "zlib",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-zlib.html",
+      "sha256": "008f9bad17291e12efb16ad97c46f0762132df3ae6c4cdb934b368dab926e08e"
+    },
+    {
+      "title": "zod",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-zod.html",
+      "sha256": "39433637db5e1d7d310a3ed7997e9fd0f956c3a5d688d2f7a6dc298203041098"
+    },
+    {
+      "title": "Zstandard",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-3rdparty-zstandard.html",
+      "sha256": "d8ecc2d08a253bba7c4f0a9fc30f6b07969dfedfeb74dfddd28d5f4483028d03"
+    },
+    {
+      "title": "Qt WebEngine Licensing",
+      "url": "https://doc.qt.io/qt-6.11/qtwebengine-licensing.html",
+      "sha256": "599c9e0f69a31849ac3a62f21019ddb848e34160f804ff81378c95bd4c142e7c"
+    }
+  ]
+}

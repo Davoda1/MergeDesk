@@ -1,0 +1,688 @@
+// MergeDesk modifications: Copyright (C) 2026 davoda1. Modified 2026-11-06.
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "NewComparisonView.h"
+#include "ArchiveCompare.h"
+#include "FileFilterCombo.h"
+#include "FileFilterMenu.h"
+#include "EngineOptions.h"
+#include "FileFilters.h"
+#include "OptionsDialog.h"
+#include "StarPrompt.h"
+#include "Theme.h"
+
+#include <QAbstractItemView>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QCompleter>
+#include <QDir>
+#include <QDragEnterEvent>
+#include <QFileSystemModel>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFrame>
+#include <QFont>
+#include <QGridLayout>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMenu>
+#include <QShortcut>
+#include <QMimeData>
+#include <QPushButton>
+#include <QSettings>
+#include <QScrollArea>
+#include <QToolButton>
+#include <QTimer>
+#include <QUrl>
+#include <QVBoxLayout>
+
+namespace
+{
+
+const QString kHistoryKey = QStringLiteral("NewComparison/History");
+constexpr int kHistoryMax = 12;
+
+/** WinMerge's OPT_AUTO_COMPLETE_SOURCE on a path field: suggestions from
+    the file system as the path is typed, from the recent paths, or none. */
+void applyAutoComplete(QComboBox *combo)
+{
+	QCompleter *completer = nullptr;
+	switch (OptionsDialog::autoCompleteSource())
+	{
+	case OptionsDialog::AutoCompleteDisabled:
+		break;
+	case OptionsDialog::AutoCompleteFileSystem:
+	{
+		completer = new QCompleter(combo);
+		auto *model = new QFileSystemModel(completer);
+		model->setOption(QFileSystemModel::DontWatchForChanges);
+		model->setFilter(QDir::AllDirs | QDir::Files | QDir::Drives
+			| QDir::NoDotAndDotDot);
+		model->setRootPath(QString());
+		completer->setModel(model);
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+		completer->setCaseSensitivity(Qt::CaseInsensitive);
+#else
+		completer->setCaseSensitivity(Qt::CaseSensitive);
+#endif
+		break;
+	}
+	case OptionsDialog::AutoCompleteRecentList:
+		completer = new QCompleter(combo->model(), combo);
+		completer->setCaseSensitivity(Qt::CaseInsensitive);
+		break;
+	}
+	if (completer != nullptr)
+		completer->setCompletionMode(QCompleter::PopupCompletion);
+	// null drops the combo's own inline completion too: "Disabled"
+	combo->setCompleter(completer);
+}
+
+} // namespace
+
+NewComparisonView::NewComparisonView(QWidget *parent)
+	: QWidget(parent)
+{
+	setAcceptDrops(true);
+
+	auto *outer = new QVBoxLayout(this);
+	outer->setContentsMargins(0, 0, 0, 0);
+	outer->setSpacing(0);
+
+	// Keep the action buttons available when the three-path form is taller
+	// than a small window. Only the form scrolls, not the comparison tab.
+	auto *formScroll = new QScrollArea(this);
+	formScroll->setObjectName(QStringLiteral("newComparisonFormScroll"));
+	formScroll->setWidgetResizable(true);
+	formScroll->setFrameShape(QFrame::NoFrame);
+	formScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	auto *content = new QWidget(formScroll);
+	content->setObjectName(QStringLiteral("newComparisonForm"));
+	auto *layout = new QVBoxLayout(content);
+	layout->setContentsMargins(24, 16, 24, 10);
+	layout->setSpacing(6);
+
+	// wordmark + top-right buttons (WinMerge-style header)
+	auto *header = new QGridLayout;
+    auto *wordmark = new QLabel(QStringLiteral("MergeDesk"), content);
+    QFont titleFont=wordmark->font();titleFont.setPointSize(25);titleFont.setBold(true);wordmark->setFont(titleFont);
+	header->addWidget(wordmark, 0, 0, 2, 1, Qt::AlignLeft | Qt::AlignTop);
+	header->setColumnStretch(1, 1);
+	auto *optionsButton = new QPushButton(tr("Options..."), content);
+	connect(optionsButton, &QPushButton::clicked, this, [this]() {
+		QMetaObject::invokeMethod(window(), "showOptions");
+	});
+	header->addWidget(optionsButton, 0, 2);
+	layout->addLayout(header);
+	layout->addSpacing(10);
+
+	const QString slotTitles[3] = {
+		tr("1st File or Folder"),
+		tr("2nd File or Folder"),
+		tr("3rd File or Folder (Optional)"),
+	};
+	const QStringList pathHistory = savedHistory();
+	for (int i = 0; i < 3; ++i)
+	{
+		auto *title = new QLabel(slotTitles[i], content);
+		QFont bold = title->font();
+		bold.setBold(true);
+		title->setFont(bold);
+		layout->addWidget(title);
+
+		m_slots[i].path = new QComboBox(content);
+		m_slots[i].path->setObjectName(QStringLiteral("newComparisonPath%1").arg(i + 1));
+		m_slots[i].path->setAccessibleName(slotTitles[i]);
+		m_slots[i].path->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+		m_slots[i].path->setMinimumContentsLength(1);
+		m_slots[i].path->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		title->setBuddy(m_slots[i].path);
+		m_slots[i].path->setEditable(true);
+		m_slots[i].path->setInsertPolicy(QComboBox::NoInsert);
+		m_slots[i].path->addItems(pathHistory);
+		applyAutoComplete(m_slots[i].path);
+		m_slots[i].path->view()->installEventFilter(this);
+		m_slots[i].path->setToolTip(tr("Shift+Delete on the open list "
+			"removes the highlighted recent path"));
+		m_slots[i].path->setCurrentText(QString());
+		// what the field itself takes: the list and the Browse button
+		// speak for themselves (the German review, issue #8)
+		m_slots[i].path->lineEdit()->setPlaceholderText(
+			tr("Type a path or drop a file or folder here"));
+		// the editable combo's line edit must not swallow drops: it would
+		// paste the raw "file://" URI (evpix's report on Linux, #2); with
+		// drops off the event reaches our dropEvent, which resolves the
+		// local path and targets the slot under the cursor
+		m_slots[i].path->lineEdit()->setAcceptDrops(false);
+		// Enter in a path field starts the comparison, like WinMerge's
+		// open screen (Enter fires IDOK/OnOK there). The button's
+		// default flag alone only works inside a QDialog, and this page
+		// lives in a tab. With the dropdown open, Enter still just
+		// picks the highlighted item.
+		connect(m_slots[i].path->lineEdit(), &QLineEdit::returnPressed,
+			this, &NewComparisonView::compare);
+		layout->addWidget(m_slots[i].path);
+
+		auto *row = new QGridLayout;
+		m_slots[i].readOnly = new QCheckBox(tr("Read-only"), content);
+		m_slots[i].readOnly->setAccessibleName(slotTitles[i] + QStringLiteral(": ") + tr("Read-only"));
+		row->addWidget(m_slots[i].readOnly, 0, 0);
+		auto *swapButton = new QPushButton(content);
+		const int a = (i == 2) ? 0 : i;
+		const int b = (i == 0) ? 1 : 2;
+		swapButton->setText(tr("\xE2\x87\x85 Swap %1 | %2").arg(a + 1).arg(b + 1));
+		connect(swapButton, &QPushButton::clicked, this, [this, a, b]() { swapSlots(a, b); });
+		row->addWidget(swapButton, 0, 1);
+		row->setColumnStretch(2, 1);
+		auto *browseButton = new QToolButton(content);
+		browseButton->setText(tr("Browse..."));
+		browseButton->setAccessibleName(slotTitles[i] + QStringLiteral(": ") + tr("Browse..."));
+		browseButton->setPopupMode(QToolButton::InstantPopup);
+		auto *browseMenu = new QMenu(browseButton);
+		browseMenu->addAction(tr("File..."), this, [this, i]() { browse(i, false); });
+		browseMenu->addAction(tr("Folder..."), this, [this, i]() { browse(i, true); });
+		browseButton->setMenu(browseMenu);
+		row->addWidget(browseButton, 0, 3);
+		layout->addLayout(row);
+		layout->addSpacing(8);
+	}
+
+	// WinMerge's "Folder: Filter" group: the file filter a folder
+	// comparison goes by, typed here, put together from the button's
+	// menu or picked in Tools > Filters, and whether it takes the
+	// subfolders in
+	m_filterTitle = new QLabel(tr("Folder: Filter"), content);
+	QFont filterBold = m_filterTitle->font();
+	filterBold.setBold(true);
+	m_filterTitle->setFont(filterBold);
+	layout->addWidget(m_filterTitle);
+	auto *filterRow = new QHBoxLayout;
+	m_filterCombo = new FileFilterCombo(content);
+	m_filterCombo->setObjectName(QStringLiteral("folderFilter"));
+	m_filterCombo->setAccessibleName(tr("Folder: Filter"));
+	m_filterTitle->setBuddy(m_filterCombo);
+	m_filterCombo->loadHistory();
+	// parsed with the preset filters at hand, like the filter in use
+	m_filterCombo->setChecker([](const QString &text) {
+		return lm::fileFilterErrors(lm::cloneFileFilter().get(), text);
+	});
+	// the filter in use, put on top of the list when it is not there
+	m_filterCombo->setMask(lm::fileFilterMask(), true);
+	// and WinMerge's example while the field is empty (the cue banner of
+	// COpenView::OnInitialUpdate)
+	m_filterCombo->lineEdit()->setPlaceholderText(
+		tr("e.g. %1").arg(QStringLiteral("*.txt|fe:Size > 100KB")));
+	filterRow->addWidget(m_filterCombo, 1);
+	// a split button, as upstream's: the button opens Tools > Filters, its
+	// arrow the menu of ready-made changes to the field's mask
+	m_selectFilterButton = new QToolButton(content);
+	m_selectFilterButton->setText(tr("Select..."));
+	m_selectFilterButton->setObjectName(QStringLiteral("selectFilter"));
+	m_selectFilterButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	m_selectFilterButton->setPopupMode(QToolButton::MenuButtonPopup);
+	m_filterMenu = new FileFilterMenu(this);
+	m_filterMenu->setMaskSource([this]() { return m_filterCombo->mask(); });
+	m_selectFilterButton->setMenu(m_filterMenu);
+	connect(m_filterMenu, &FileFilterMenu::maskChosen, this,
+		[this](const QString &mask) { m_filterCombo->setMask(mask, false); });
+	connect(m_filterMenu, &FileFilterMenu::reopenRequested, m_selectFilterButton,
+		&QToolButton::showMenu, Qt::QueuedConnection);
+	connect(m_selectFilterButton, &QToolButton::clicked, this, [this]() {
+		const QString before = m_filterCombo->mask().trimmed();
+		QMetaObject::invokeMethod(window(), "showFilters");
+		// what the dialog left in use takes the field over
+		const QString now = lm::fileFilterMask();
+		if (before != now)
+			m_filterCombo->setMask(now, false);
+	});
+	filterRow->addWidget(m_selectFilterButton);
+	layout->addLayout(filterRow);
+	// OPT_CMP_INCLUDE_SUBDIRS, saved as Compare runs (COpenView::OnOK)
+	m_includeSubfolders = new QCheckBox(tr("&Include subfolders"), content);
+	m_includeSubfolders->setObjectName(QStringLiteral("includeSubfolders"));
+	m_includeSubfolders->setChecked(lm::includeSubfolders());
+	layout->addWidget(m_includeSubfolders);
+
+	layout->addStretch(1);
+	// (where the request for a star goes, see below)
+
+
+	auto *buttons = new QGridLayout;
+	buttons->setContentsMargins(24, 8, 24, 8);
+	buttons->setColumnStretch(0, 1);
+	auto *compareButton = new QPushButton(tr("Compare"), this);
+	compareButton->setObjectName(QStringLiteral("newComparisonCompare"));
+	compareButton->setDefault(true);
+	m_compareButton = compareButton;
+	connect(compareButton, &QPushButton::clicked, this, &NewComparisonView::compare);
+	// Enter anywhere on the page starts the comparison, the IDOK
+	// semantics of WinMerge's open dialog. The returnPressed hookup on
+	// the path fields alone was not enough: with the focus elsewhere
+	// (or older Qt routing the key into the history completer) the
+	// press never reached them. No button here has autoDefault (the
+	// page is not a QDialog), so the key is free; an open dropdown or
+	// completer popup still grabs it first to pick the highlighted item.
+	for (const Qt::Key key : { Qt::Key_Return, Qt::Key_Enter })
+	{
+		auto *shortcut = new QShortcut(QKeySequence(key), this);
+		// window scope, not widget scope: after a drag and drop the
+		// focus may sit outside this page (the tab bar), where a
+		// child-scoped shortcut never fires. The visibility guard
+		// keeps Enter working normally on the other tabs.
+		shortcut->setContext(Qt::WindowShortcut);
+		connect(shortcut, &QShortcut::activated, this, [this]() {
+			if (isVisible())
+				compare();
+		});
+	}
+	buttons->addWidget(compareButton, 0, 1);
+	auto *cancelButton = new QPushButton(tr("Cancel"), this);
+	cancelButton->setObjectName(QStringLiteral("newComparisonCancel"));
+	connect(cancelButton, &QPushButton::clicked, this, &NewComparisonView::cancelled);
+	buttons->addWidget(cancelButton, 0, 2);
+	formScroll->setWidget(content);
+	outer->addWidget(formScroll, 1);
+	outer->addLayout(buttons);
+
+	auto *line = new QFrame(this);
+	line->setFrameShape(QFrame::HLine);
+	line->setFrameShadow(QFrame::Sunken);
+	outer->addWidget(line);
+	m_hint = new QLabel(this);
+	m_hint->setObjectName(QStringLiteral("newComparisonHint"));
+	m_hint->setWordWrap(true);
+	m_hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	m_hint->setContentsMargins(8, 4, 8, 4);
+	outer->addWidget(m_hint);
+	setHint(tr("Select two (or three) folders/files to compare."), false);
+	connect(lm::Theme::instance(), &lm::Theme::changed, this, [this]() {
+		setHint(m_hint->text(), m_hint->property("error").toBool());
+	});
+
+	// the paths are checked as they change: typed, picked, swapped,
+	// dropped or browsed all go through the edit text
+	m_verifyTimer = new QTimer(this);
+	m_verifyTimer->setSingleShot(true);
+	m_verifyTimer->setInterval(150);
+	connect(m_verifyTimer, &QTimer::timeout, this, &NewComparisonView::verifyPaths);
+	for (Slot &slot : m_slots)
+		connect(slot.path, &QComboBox::editTextChanged,
+			m_verifyTimer, qOverload<>(&QTimer::start));
+	verifyPaths();
+}
+
+/** WinMerge's check of the open dialog's paths (UpdateButtonStatesThread):
+    the status names the invalid paths or a file and folder mix, and
+    Compare is enabled once any path exists. Archives count as folders.
+    One liberty: with every field empty the status stays the neutral
+    prompt rather than "Both paths are invalid!". */
+void NewComparisonView::verifyPaths()
+{
+	m_verifyTimer->stop();
+	const QString prompt = tr("Select two (or three) folders/files to compare.");
+	if (!OptionsDialog::verifyOpenPaths())
+	{
+		m_compareButton->setEnabled(true);
+		showFilterGroup(true, true);
+		return;
+	}
+
+	enum Kind { Missing, File, Folder };
+	QString paths[3];
+	Kind kind[3] = { Missing, Missing, Missing };
+	bool folderLike[3] = {};
+	bool anyExists = false;
+	for (int i = 0; i < 3; ++i)
+	{
+		paths[i] = m_slots[i].path->currentText().trimmed();
+		const QFileInfo info(paths[i]);
+		if (!paths[i].isEmpty() && info.exists())
+			kind[i] = info.isDir() ? Folder : File;
+		folderLike[i] = kind[i] == Folder
+			|| (kind[i] == File && lm::isArchivePath(paths[i]));
+		anyExists = anyExists || kind[i] != Missing;
+	}
+	m_compareButton->setEnabled(anyExists);
+	// the filter group (OnUpdateStatus): shown for a folder comparison,
+	// or while no path says it is a file comparison; usable once a folder
+	// or an archive is among the paths
+	bool fileCompare = false, folderCompare = false;
+	for (int i = 0; i < 3; ++i)
+	{
+		fileCompare = fileCompare || kind[i] == File;
+		folderCompare = folderCompare || folderLike[i];
+	}
+	showFilterGroup(folderCompare || !fileCompare, folderCompare);
+	if (paths[0].isEmpty() && paths[1].isEmpty() && paths[2].isEmpty())
+	{
+		setHint(prompt, false);
+		return;
+	}
+
+	const bool bad[3] = { kind[0] == Missing, kind[1] == Missing, kind[2] == Missing };
+	QString message;
+	if (paths[2].isEmpty())
+	{
+		if (bad[0] && bad[1])
+			message = tr("Both paths are invalid!");
+		else if (bad[0])
+			message = tr("Left (1st) path is invalid!");
+		else if (bad[1])
+		{
+			// a lone file with nothing on the right is still a start
+			if (!(kind[0] == File && paths[1].isEmpty()))
+				message = tr("Right (2nd) path is invalid!");
+		}
+		else if (kind[0] != kind[1] && !(folderLike[0] && folderLike[1]))
+			message = tr("Cannot compare file and folder!");
+	}
+	else if (bad[0] && bad[1] && bad[2])
+		message = tr("All paths are invalid!");
+	else if (bad[1] && bad[2])
+		message = tr("Middle (2nd) and Right (3rd) paths are invalid!");
+	else if (bad[0] && bad[2])
+		message = tr("Left (1st) and Right (3rd) paths are invalid!");
+	else if (bad[2])
+		message = tr("Right (3rd) path is invalid!");
+	else if (bad[0] && bad[1])
+		message = tr("Left (1st) and Middle (2nd) paths are invalid!");
+	else if (bad[1])
+		message = tr("Middle (2nd) path is invalid!");
+	else if (bad[0])
+		message = tr("Left (1st) path is invalid!");
+	else if ((kind[0] != kind[1] || kind[0] != kind[2])
+		&& !(folderLike[0] && folderLike[1] && folderLike[2]))
+		message = tr("Cannot compare file and folder!");
+	setHint(message.isEmpty() ? prompt : message, !message.isEmpty());
+}
+
+void NewComparisonView::showFilterGroup(bool visible, bool enabled)
+{
+	// "Include subfolders" with them (COpenView::UpdateButtonStates)
+	for (QWidget *widget : { static_cast<QWidget *>(m_filterTitle),
+			static_cast<QWidget *>(m_filterCombo),
+			static_cast<QWidget *>(m_selectFilterButton),
+			static_cast<QWidget *>(m_includeSubfolders) })
+	{
+		if (widget == nullptr)
+			continue;
+		widget->setVisible(visible);
+		widget->setEnabled(enabled);
+	}
+}
+
+/** COpenView::OnOK: the field's filter is the file filter from now on,
+    "*.*" when the field is empty, and joins the field's history. */
+void NewComparisonView::applyFileFilter()
+{
+	QString filter = m_filterCombo->mask().trimmed();
+	const QString prefix = tr("[F] ");
+	if (filter.startsWith(prefix))
+		filter.remove(0, prefix.length());
+	if (filter.isEmpty())
+		filter = QStringLiteral("*.*");
+	lm::setFileFilterMask(filter);
+	m_filterCombo->setMask(filter, false);
+	m_filterCombo->saveHistory();
+}
+
+QString NewComparisonView::hintForTest() const
+{
+	return m_hint->text();
+}
+
+bool NewComparisonView::compareEnabledForTest() const
+{
+	return m_compareButton->isEnabled();
+}
+
+void NewComparisonView::focusFirstField()
+{
+	m_slots[0].path->setFocus();
+}
+
+void NewComparisonView::addPaths(const QStringList &paths)
+{
+	int slot = 0;
+	for (const QString &path : paths)
+	{
+		while (slot < 3 && !m_slots[slot].path->currentText().trimmed().isEmpty())
+			++slot;
+		if (slot >= 3)
+			break;
+		m_slots[slot].path->setCurrentText(QFileInfo(path).absoluteFilePath());
+	}
+}
+
+void NewComparisonView::dragEnterEvent(QDragEnterEvent *event)
+{
+	if (event->mimeData()->hasUrls())
+		event->acceptProposedAction();
+}
+
+void NewComparisonView::dropEvent(QDropEvent *event)
+{
+	QStringList paths;
+	for (const QUrl &url : event->mimeData()->urls())
+	{
+		if (url.isLocalFile())
+			paths.append(url.toLocalFile());
+	}
+	if (paths.isEmpty())
+		return;
+
+	// dropping directly onto a slot's row targets that slot
+	for (int i = 0; i < 3; ++i)
+	{
+		const QRect area = m_slots[i].path->geometry()
+			.adjusted(0, -24, 0, 28)
+			.translated(m_slots[i].path->parentWidget()->mapTo(this, QPoint(0, 0)));
+		if (area.contains(event->position().toPoint()))
+		{
+			m_slots[i].path->setCurrentText(QFileInfo(paths.first()).absoluteFilePath());
+			paths.removeFirst();
+			break;
+		}
+	}
+	addPaths(paths);
+	event->acceptProposedAction();
+}
+
+void NewComparisonView::swapSlots(int a, int b)
+{
+	const QString pathA = m_slots[a].path->currentText();
+	const bool roA = m_slots[a].readOnly->isChecked();
+	m_slots[a].path->setCurrentText(m_slots[b].path->currentText());
+	m_slots[a].readOnly->setChecked(m_slots[b].readOnly->isChecked());
+	m_slots[b].path->setCurrentText(pathA);
+	m_slots[b].readOnly->setChecked(roA);
+}
+
+void NewComparisonView::browse(int slot, bool folder)
+{
+	const QString start = QFileInfo(m_slots[slot].path->currentText()).absolutePath();
+	const QString path = folder
+		? QFileDialog::getExistingDirectory(this, tr("Select Folder"), start)
+		: QFileDialog::getOpenFileName(this, tr("Select File"), start);
+	if (!path.isEmpty())
+		m_slots[slot].path->setCurrentText(path);
+}
+
+void NewComparisonView::setHint(const QString &text, bool error)
+{
+	m_hint->setText(text);
+	m_hint->setProperty("error", error);
+	QPalette hintPalette = palette();
+	if (error)
+		hintPalette.setColor(QPalette::WindowText,
+			hintPalette.color(QPalette::Window).lightness() < 128
+				? QColor(QStringLiteral("#ff8c8c")) : QColor(QStringLiteral("#a12626")));
+	m_hint->setPalette(hintPalette);
+}
+
+QStringList NewComparisonView::savedHistory()
+{
+	return QSettings().value(kHistoryKey).toStringList();
+}
+
+void NewComparisonView::clearSavedHistory()
+{
+	QSettings().remove(kHistoryKey);
+}
+
+bool NewComparisonView::eventFilter(QObject *watched, QEvent *event)
+{
+	if (event->type() == QEvent::KeyPress)
+	{
+		const auto *key = static_cast<QKeyEvent *>(event);
+		// Mac keyboards label Backspace "delete"; forward delete is fn+delete
+		if ((key->key() == Qt::Key_Delete || key->key() == Qt::Key_Backspace)
+			&& key->modifiers() == Qt::ShiftModifier)
+		{
+			for (Slot &slot : m_slots)
+			{
+				if (watched != slot.path->view())
+					continue;
+				const QModelIndex current = slot.path->view()->currentIndex();
+				if (current.isValid())
+					forgetPath(slot.path->itemText(current.row()));
+				return true;
+			}
+		}
+	}
+	return QWidget::eventFilter(watched, event);
+}
+
+void NewComparisonView::forgetPath(const QString &path)
+{
+	QStringList paths = savedHistory();
+	paths.removeAll(path);
+	QSettings().setValue(kHistoryKey, paths);
+	for (Slot &slot : m_slots)
+	{
+		const int row = slot.path->findText(path, Qt::MatchExactly);
+		if (row < 0)
+			continue;
+		// a path typed in the field stays even when it matches
+		const QString typed = slot.path->currentText();
+		slot.path->removeItem(row);
+		slot.path->setCurrentText(typed);
+	}
+}
+
+void NewComparisonView::reloadHistory()
+{
+	const QStringList paths = savedHistory();
+	for (Slot &slot : m_slots)
+	{
+		// the typed paths stay; the recent-list completer shares the
+		// combo's model, so it follows
+		const QString typed = slot.path->currentText();
+		slot.path->clear();
+		slot.path->addItems(paths);
+		slot.path->setCurrentText(typed);
+	}
+}
+
+void NewComparisonView::rememberPaths(const QStringList &paths)
+{
+	QSettings settings;
+	QStringList mru = settings.value(kHistoryKey).toStringList();
+	for (const QString &path : paths)
+	{
+		mru.removeAll(path);
+		mru.prepend(path);
+	}
+	while (mru.size() > kHistoryMax)
+		mru.removeLast();
+	settings.setValue(kHistoryKey, mru);
+}
+
+void NewComparisonView::compare()
+{
+	// one Enter can land here twice: QLineEdit emits returnPressed and then
+	// ignores the key (for a dialog's default button), the key propagates
+	// to the editable combo, which hands it back to the line edit for a
+	// second returnPressed. The window-wide shortcut usually takes the key
+	// first, but not when the window is inactive; either way one press is
+	// one comparison, so repeats within the same event-loop cycle are
+	// dropped.
+	if (m_compareArmed)
+		return;
+	// Enter typed faster than the path check: decide on the paths as
+	// they are now; a disabled Compare ignores Enter, like WinMerge's
+	// default button
+	if (m_verifyTimer->isActive())
+		verifyPaths();
+	if (!m_compareButton->isEnabled())
+		return;
+	m_compareArmed = true;
+	QTimer::singleShot(0, this, [this]() { m_compareArmed = false; });
+
+	QStringList paths;
+	QList<bool> readOnly;
+	for (int i = 0; i < 3; ++i)
+	{
+		QString path = m_slots[i].path->currentText().trimmed();
+		if (path.isEmpty())
+			continue;
+		// pasted or typed "file://" URIs still resolve (percent-encoding
+		// included) instead of failing as nonexistent paths
+		if (path.startsWith(QStringLiteral("file://")))
+		{
+			const QString local = QUrl(path).toLocalFile();
+			if (!local.isEmpty())
+				path = local;
+		}
+		paths.append(path);
+		readOnly.append(m_slots[i].readOnly->isChecked());
+	}
+	// the first path alone: WinMerge's self-compare for a file (a folder
+	// alone does nothing there), without touching the path history
+	if (paths.size() == 1 && !m_slots[0].path->currentText().trimmed().isEmpty())
+	{
+		const QFileInfo info(paths.first());
+		if (info.isFile())
+		{
+			applyFileFilter();
+			lm::saveIncludeSubfolders(m_includeSubfolders->isChecked());
+			emit compareRequested(paths, readOnly, false);
+		}
+		else if (!info.exists())
+			setHint(tr("Path does not exist: %1").arg(paths.first()), true);
+		return;
+	}
+	if (paths.size() < 2)
+	{
+		setHint(tr("Select two (or three) folders/files to compare."), true);
+		return;
+	}
+
+	// archives count as folders: they extract and compare as such, alone
+	// or against real folders, like WinMerge
+	int plainFiles = 0, folderLike = 0;
+	for (const QString &path : paths)
+	{
+		const QFileInfo info(path);
+		if (info.isDir() || (info.isFile() && lm::isArchivePath(path)))
+			++folderLike;
+		else if (info.isFile())
+			++plainFiles;
+		else
+		{
+			setHint(tr("Path does not exist: %1").arg(path), true);
+			return;
+		}
+	}
+	const bool folders = folderLike == paths.size();
+	if (!folders && plainFiles != paths.size())
+	{
+		setHint(tr("Mixing files and folders is not supported: select two or "
+			"three files, or two or three folders or archives."), true);
+		return;
+	}
+	rememberPaths(paths);
+	applyFileFilter();
+	lm::saveIncludeSubfolders(m_includeSubfolders->isChecked());
+	emit compareRequested(paths, readOnly, folders);
+}
